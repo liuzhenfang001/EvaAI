@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# EvaAI local config (machine-specific, may contain secrets)
+config.yaml
