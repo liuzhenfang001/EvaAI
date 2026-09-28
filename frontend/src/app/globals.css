@@ -1,0 +1,135 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #0f1115;
+  color: #e6e6e6;
+}
+
+.chat {
+  max-width: 760px;
+  margin: 0 auto;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+}
+
+.chat-header {
+  padding: 8px 0 16px;
+}
+
+.chat-header h1 {
+  font-size: 22px;
+}
+
+.chat-header .subtitle {
+  color: #8a8f98;
+  font-size: 13px;
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.empty {
+  color: #5b6068;
+  text-align: center;
+  margin-top: 40px;
+}
+
+.msg .role {
+  font-size: 12px;
+  color: #8a8f98;
+  margin-bottom: 4px;
+}
+
+.msg .bubble {
+  padding: 10px 14px;
+  border-radius: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg.user {
+  align-items: flex-end;
+}
+
+.msg.user .bubble {
+  background: #2563eb;
+  color: #fff;
+}
+
+.msg.assistant .bubble {
+  background: #1c1f26;
+}
+
+.tools {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tool {
+  font-size: 12px;
+  background: #2a2f3a;
+  border: 1px solid #3a4050;
+  color: #9fb4ff;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.error {
+  color: #ff6b6b;
+  padding: 8px 0;
+  font-size: 13px;
+}
+
+.input-row {
+  display: flex;
+  gap: 8px;
+  padding-top: 12px;
+}
+
+.input-row input {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #2a2f3a;
+  background: #1c1f26;
+  color: #e6e6e6;
+  font-size: 15px;
+}
+
+.input-row input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.input-row button {
+  padding: 0 20px;
+  border-radius: 10px;
+  border: none;
+  background: #2563eb;
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.input-row button:disabled {
+  background: #2a2f3a;
+  color: #5b6068;
+  cursor: not-allowed;
+}
