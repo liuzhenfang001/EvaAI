@@ -1,21 +1,20 @@
-"""SSE 帧格式化与流式生成器。
+"""RunEvent → SSE 帧的映射与流式生成器。
 
 帧格式照搬 DeerFlow 的 ``format_sse``（`D:\\pythonPro\\deer-flow\\backend\\app\\gateway\\services.py`）：
 ``event:`` -> ``data:`` -> ``id:``(可选) -> 空行，``data`` 恒为 JSON。
 
-流式来源为 ``graph.astream(stream_mode="messages")``（LangGraph Platform 的
-``messages`` 事件，DeerFlow 公开名 ``messages-tuple``），逐 token 产出
-``(AIMessageChunk, metadata)`` 元组；T1 无 StreamBridge/重连/gap/heartbeat，
-直接转发为 ``messages`` 帧。
+这一层只做传输，不做编排：事件由 ``evaharness`` 产出，这里按事件名逐个转帧。
+``messages`` 帧沿用 T1 的线上形状（``data = [chunk, metadata]``），其余事件是
+「带 ``type`` 判别键的对象」——两套形状并存是有意的，后者能承载结构化载荷。
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from typing import Any
 
-from langgraph.graph.state import CompiledStateGraph
+from evaharness.agents.plan_exec.events import MessagesEvent, RunEvent
 
 
 def format_sse(event: str, data: Any, *, event_id: str | None = None) -> str:
@@ -33,19 +32,24 @@ def format_sse(event: str, data: Any, *, event_id: str | None = None) -> str:
     return "\n".join(parts)
 
 
-async def sse_consumer(graph: CompiledStateGraph, messages: Sequence[Any]) -> AsyncIterator[str]:
-    """把 ``graph.astream(stream_mode="messages")`` 的流转成 SSE 帧序列。
+def map_run_event(event: RunEvent) -> str:
+    """把一个 :class:`RunEvent` 转成 SSE 帧。"""
+    if isinstance(event, MessagesEvent):
+        return format_sse("messages", [event.chunk, event.metadata])
+    return format_sse(event.type, event.model_dump(mode="json"))
 
-    事件：``messages``（data=``[chunk_dict, metadata]``，token 增量）、``end``
-    （data=null）、``error``（data=``{"message","name"}``，仅异常时）。
+
+async def sse_consumer(events: AsyncIterator[RunEvent]) -> AsyncIterator[str]:
+    """把 RunEvent 流转成 SSE 帧序列。
+
+    事件名直接取自事件的 ``type``；流以 ``end`` 收尾，异常转 ``error`` 帧。
+
+    注意 ``except Exception`` 拦不到 :class:`asyncio.CancelledError`（它继承
+    ``BaseException``）——客户端断开时的硬取消会原样穿透（ADR-0005）。
     """
     try:
-        async for chunk, metadata in graph.astream(
-            {"messages": list(messages)},
-            stream_mode="messages",
-        ):
-            data = [chunk.model_dump(mode="json"), metadata if isinstance(metadata, dict) else {}]
-            yield format_sse("messages", data)
+        async for event in events:
+            yield map_run_event(event)
         yield format_sse("end", None)
     except Exception as exc:  # 流式兜底：把异常转为 error 事件而非中断连接
         yield format_sse("error", {"message": str(exc), "name": type(exc).__name__})

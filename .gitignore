@@ -219,3 +219,6 @@ __marimo__/
 
 # EvaAI local config (machine-specific, may contain secrets)
 config.yaml
+
+# EvaAI runtime data (sqlite checkpoints)
+data/

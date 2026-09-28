@@ -1,7 +1,7 @@
 """Typed configuration schema (pydantic).
 
-M1 defines the ``models`` section; later milestones extend :class:`AppConfig`
-with sandbox / memory / checkpointer / tracing sections.
+M1 defines the ``models`` section, T2 adds ``checkpoint``; later milestones extend
+:class:`AppConfig` with sandbox / memory / tracing sections.
 """
 
 from __future__ import annotations
@@ -27,6 +27,18 @@ class ModelConfig(BaseModel):
     temperature: float = 0.0
 
 
+class CheckpointConfig(BaseModel):
+    """Checkpoint 持久化（SQLite）配置。
+
+    ``retention_days <= 0`` 表示不做清理（保留全部）——配置写错时倾向于留数据。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    db_path: str = "./data/checkpoints.sqlite"
+    retention_days: int = 7
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration (loaded from config.yaml)."""
 
@@ -35,6 +47,7 @@ class AppConfig(BaseModel):
     config_version: int
     log_level: str = "info"
     models: list[ModelConfig]
+    checkpoint: CheckpointConfig = CheckpointConfig()
 
     def get_model_config(self, name: str) -> ModelConfig | None:
         """Return the model profile named *name*, or ``None``."""

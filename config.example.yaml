@@ -10,3 +10,9 @@ models:
     base_url: https://api.deepseek.com/v1
     api_key: $DEEPSEEK_API_KEY
     temperature: 0.0
+
+# Checkpoint 持久化（SQLite）：保存每个 ReAct 任务图内部的 state，
+# 供中断后排查与二期恢复使用。注意它**不保存编排进度**（见 docs/adr/0007）。
+checkpoint:
+  db_path: ./data/checkpoints.sqlite
+  retention_days: 7   # 启动时清理最后活动早于 N 天的 thread；<=0 表示不清理
