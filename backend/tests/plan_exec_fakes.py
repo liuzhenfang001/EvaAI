@@ -141,12 +141,23 @@ class ExecutorStep:
 
 @dataclass
 class FakeExecutor:
-    """按 task id 播放剧本的假执行单元。"""
+    """按 task id 播放剧本的假执行单元。
+
+    每产出一步都 ``await asyncio.sleep(0)`` 交出控制权，并记录**并发峰值**
+    ``max_concurrent``。理由：真执行单元在每一步都会真的挂起（等模型、等工具），
+    而剧本式的假替身不 await 的话会比真实现更「同步」——同批任务会被一个接一个
+    独占跑完，于是「有没有真的并行」就测不出来了。
+
+    同理，脚本没有发生挂起点时 ``_active`` 的进出发生在同一个调度片里，
+    峰值恒为 1，也测不出并行。
+    """
 
     steps: dict[str, ExecutorStep] = field(default_factory=dict)
     default: ExecutorStep = field(default_factory=ExecutorStep)
     invocations: list[TaskInvocation] = field(default_factory=list)
     saw_cancellation: bool = False
+    max_concurrent: int = 0
+    _active: int = 0
     _hang: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def __call__(self, invocation: TaskInvocation, /) -> AsyncIterator[RunEvent]:
@@ -155,9 +166,18 @@ class FakeExecutor:
 
     async def _stream(self, invocation: TaskInvocation) -> AsyncIterator[RunEvent]:
         step = self.steps.get(invocation.task.id, self.default)
+        self._active += 1
+        self.max_concurrent = max(self.max_concurrent, self._active)
         try:
+            # 无条件挂起一次：否则空剧本的任务会在一整个调度片里跑完生成器
+            # （无界队列的 put 不挂起），并发峰值恒为 1，那就成了假象。
+            await asyncio.sleep(0)
             for content in step.messages:
-                yield MessagesEvent(chunk={"content": content, "type": "AIMessageChunk"})
+                await asyncio.sleep(0)
+                yield MessagesEvent(
+                    task_id=invocation.task.id,
+                    chunk={"content": content, "type": "AIMessageChunk"},
+                )
             if step.raises is not None:
                 raise step.raises
             if step.hangs:
@@ -172,6 +192,8 @@ class FakeExecutor:
         except asyncio.CancelledError:
             self.saw_cancellation = True
             raise
+        finally:
+            self._active -= 1
 
 
 async def collect(stream: AsyncIterator[RunEvent]) -> list[RunEvent]:

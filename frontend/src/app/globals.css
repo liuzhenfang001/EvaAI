@@ -286,7 +286,6 @@ body {
 .plan-foot {
   margin-top: auto;
   padding-top: 10px;
-  padding-top: 10px;
   border-top: 1px solid #2a2f3a;
   font-size: 12px;
   color: #8a8f98;
@@ -311,6 +310,98 @@ body {
 
 .plan-foot-line {
   word-break: break-word;
+}
+
+/* ---- 回放 ---- */
+
+.run-picker {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid #2a2f3a;
+  background: #171a21;
+  color: #c9cdd4;
+  font-size: 12px;
+}
+
+.run-picker:disabled {
+  color: #5b6068;
+  cursor: not-allowed;
+}
+
+.replay-banner {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #2a2210;
+  border: 1px solid #5c4a12;
+  color: #d29922;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* ---- 时间线 ---- */
+
+.plan-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid #2a2f3a;
+}
+
+.plan-timeline h3 {
+  font-size: 13px;
+  color: #8a8f98;
+  font-weight: 500;
+}
+
+.timeline {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 同行网格：序号 / 泳道 / 图标 / 文本。泳道列固定宽度，并行时的交错才看得清。 */
+.tl-row {
+  display: grid;
+  grid-template-columns: 22px 44px 18px minmax(0, 1fr);
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #9aa0aa;
+}
+
+.tl-seq {
+  color: #5b6068;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.tl-lane {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #8a8f98;
+}
+
+.tl-lane.task-lane {
+  color: #9fb4ff;
+}
+
+.tl-icon {
+  color: #5b6068;
+}
+
+.tl-text {
+  word-break: break-word;
+}
+
+.tl-row.start .tl-text,
+.tl-row.end .tl-text {
+  color: #c9cdd4;
+}
+
+.tl-row.run .tl-text {
+  color: #8a8f98;
 }
 
 /* 窄屏：面板移到聊天区上方，输入框仍然贴底。 */

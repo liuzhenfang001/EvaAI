@@ -33,9 +33,15 @@ def format_sse(event: str, data: Any, *, event_id: str | None = None) -> str:
 
 
 def map_run_event(event: RunEvent) -> str:
-    """把一个 :class:`RunEvent` 转成 SSE 帧。"""
+    """把一个 :class:`RunEvent` 转成 SSE 帧。
+
+    ``MessagesEvent`` 的 ``task_id`` 并进 ``metadata`` 而不是新增数组元素：langgraph
+    本来就把「这条 chunk 的附属信息」放在 metadata 里，加一个自有键是同一精神，
+    而 T1 定下的 ``data = [chunk, metadata]`` 形状一字未动。并行派发后 token 会交错
+    到达，前端靠这个键把增量分流到各自的气泡与时间线泳道。
+    """
     if isinstance(event, MessagesEvent):
-        return format_sse("messages", [event.chunk, event.metadata])
+        return format_sse("messages", [event.chunk, {**event.metadata, "task_id": event.task_id}])
     return format_sse(event.type, event.model_dump(mode="json"))
 
 

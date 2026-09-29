@@ -16,3 +16,10 @@ models:
 checkpoint:
   db_path: ./data/checkpoints.sqlite
   retention_days: 7   # 启动时清理最后活动早于 N 天的 thread；<=0 表示不清理
+
+# RunJournal：把每次运行的完整 RunEvent 序列落盘，供前端按 run_id 回放（见 docs/adr/0008）。
+# 它记录的是**编排器的事件流**，与 SSE 是同一份数据的两个消费者。
+journal:
+  store: evaharness.journal.stores:JsonlJournalStore   # 也可以是 :MemoryJournalStore（仅测试用）
+  dir: ./data/journal                                   # 相对路径按项目根解析
+  flush_threshold: 20                                   # 攒够多少条落一次盘（逐 token 落盘会拖慢实时流）

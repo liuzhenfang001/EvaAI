@@ -29,16 +29,25 @@ def _roundtrip(event):
 
 
 def test_messages_event_roundtrips_with_type_discriminator():
-    event = MessagesEvent(chunk={"content": "你", "type": "AIMessageChunk"}, metadata={"langgraph_node": "model"})
+    event = MessagesEvent(
+        task_id="t1",
+        chunk={"content": "你", "type": "AIMessageChunk"},
+        metadata={"langgraph_node": "model"},
+    )
     dumped, parsed = _roundtrip(event)
     assert dumped["type"] == "messages"
+    assert dumped["task_id"] == "t1"
     assert parsed == event
 
 
 def test_plan_event_roundtrips():
-    event = PlanEvent(tasks=[PlanTask(id="t1", description="查时间", completion_criteria=["给出 ISO 时间"])])
+    event = PlanEvent(
+        run_id="run-abc",
+        tasks=[PlanTask(id="t1", description="查时间", completion_criteria=["给出 ISO 时间"])],
+    )
     dumped, parsed = _roundtrip(event)
     assert dumped["type"] == "plan"
+    assert dumped["run_id"] == "run-abc"
     assert parsed.tasks[0].id == "t1"
     assert parsed.tasks[0].completion_criteria == ["给出 ISO 时间"]
 
@@ -103,8 +112,8 @@ def test_missing_discriminator_is_rejected():
 def test_every_event_exposes_a_type_literal():
     """SSE 事件名直接取自 type，所以每个变体都必须自带它。"""
     for event in [
-        MessagesEvent(chunk={}),
-        PlanEvent(tasks=[]),
+        MessagesEvent(task_id="t1", chunk={}),
+        PlanEvent(run_id="run-abc", tasks=[]),
         TaskStartEvent(task_id="t1", description="d"),
         TaskEndEvent(task_id="t1", status="done"),
         SummaryEvent(status="completed", results=[]),

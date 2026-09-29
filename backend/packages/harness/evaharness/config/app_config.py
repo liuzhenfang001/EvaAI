@@ -1,7 +1,7 @@
 """Typed configuration schema (pydantic).
 
-M1 defines the ``models`` section, T2 adds ``checkpoint``; later milestones extend
-:class:`AppConfig` with sandbox / memory / tracing sections.
+M1 defines the ``models`` section, T2 adds ``checkpoint``, T3 adds ``journal``;
+later milestones extend :class:`AppConfig` with sandbox / memory / tracing sections.
 """
 
 from __future__ import annotations
@@ -39,6 +39,24 @@ class CheckpointConfig(BaseModel):
     retention_days: int = 7
 
 
+class JournalConfig(BaseModel):
+    """RunJournal 的配置。
+
+    ``store`` 是 ``"module.path:ClassName"`` 类路径（同 :class:`ModelConfig` 的
+    ``use``）；``dir`` 之类的构造参数透传给 store。默认落 JSONL 而非内存——运行
+    记录不落盘的话，「回放」就无从谈起。
+
+    ``dir`` 缺省为 ``None`` 表示「用 store 自己的默认值」：这样换成不接受该参数的
+    实现（如 :class:`~evaharness.journal.stores.MemoryJournalStore`）也不会炸。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    store: str = "evaharness.journal.stores:JsonlJournalStore"
+    flush_threshold: int = 20
+    dir: str | None = None
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration (loaded from config.yaml)."""
 
@@ -48,6 +66,7 @@ class AppConfig(BaseModel):
     log_level: str = "info"
     models: list[ModelConfig]
     checkpoint: CheckpointConfig = CheckpointConfig()
+    journal: JournalConfig = JournalConfig()
 
     def get_model_config(self, name: str) -> ModelConfig | None:
         """Return the model profile named *name*, or ``None``."""

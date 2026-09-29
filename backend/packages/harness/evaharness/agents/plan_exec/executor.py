@@ -134,6 +134,7 @@ def make_react_executor(
                 if kind == "messages":
                     chunk, metadata = data
                     yield MessagesEvent(
+                        task_id=task.id,
                         chunk=chunk.model_dump(mode="json"),
                         metadata=metadata if isinstance(metadata, dict) else {},
                     )

@@ -51,19 +51,28 @@ def _parse(frame):
 
 
 def test_map_run_event_messages_keeps_t1_wire_shape():
-    """data 仍是 [chunk, metadata] 二元数组——T1 的前端解析不用改。"""
-    chunk = {"content": "你", "type": "AIMessageChunk"}
-    frame = map_run_event(MessagesEvent(chunk=chunk, metadata={"langgraph_node": "model"}))
+    """data 仍是 [chunk, metadata] 二元数组——T1 的前端解析不用改。
 
-    assert _parse(frame) == ("messages", [chunk, {"langgraph_node": "model"}])
+    ``task_id`` 并进 metadata 而不是新增第三个元素：langgraph 本来就把
+    「这条 chunk 的附属信息」放在 metadata 里，加一个自有键是同一精神，
+    而线上形状一字未动。
+    """
+    chunk = {"content": "你", "type": "AIMessageChunk"}
+    frame = map_run_event(MessagesEvent(task_id="t1", chunk=chunk, metadata={"langgraph_node": "model"}))
+
+    assert _parse(frame) == ("messages", [chunk, {"langgraph_node": "model", "task_id": "t1"}])
 
 
 def test_map_run_event_plan_frame():
-    event = PlanEvent(tasks=[PlanTask(id="t1", description="查时间", completion_criteria=["给出时间"])])
+    event = PlanEvent(
+        run_id="run-abc",
+        tasks=[PlanTask(id="t1", description="查时间", completion_criteria=["给出时间"])],
+    )
     name, data = _parse(map_run_event(event))
 
     assert name == "plan"
     assert data["type"] == "plan"
+    assert data["run_id"] == "run-abc"
     assert data["tasks"][0]["id"] == "t1"
 
 
@@ -116,9 +125,9 @@ async def _from_list(events, *, error=None):
 @pytest.mark.asyncio
 async def test_sse_consumer_maps_events_then_ends():
     events = [
-        PlanEvent(tasks=[PlanTask(id="t1", description="d")]),
+        PlanEvent(run_id="run-abc", tasks=[PlanTask(id="t1", description="d")]),
         TaskStartEvent(task_id="t1", description="d"),
-        MessagesEvent(chunk={"content": "hi"}),
+        MessagesEvent(task_id="t1", chunk={"content": "hi"}),
         TaskEndEvent(task_id="t1", status="done", output="hi"),
         SummaryEvent(status="completed", results=[TaskResult(task_id="t1", status="done")]),
     ]
@@ -144,7 +153,7 @@ async def test_sse_consumer_does_not_swallow_cancellation():
     """硬取消（ADR-0005）必须穿过这一层——它继承 BaseException，不该变成 error 帧。"""
 
     async def cancelled():
-        yield PlanEvent(tasks=[])
+        yield PlanEvent(run_id="run-abc", tasks=[])
         raise asyncio.CancelledError
 
     frames = []

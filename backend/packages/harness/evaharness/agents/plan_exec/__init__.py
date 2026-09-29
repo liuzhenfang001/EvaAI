@@ -21,6 +21,7 @@ from evaharness.agents.plan_exec.executor import (
     make_react_executor,
     render_task_prompt,
 )
+from evaharness.agents.plan_exec.fanout import StreamCrashed, merge_named_streams
 from evaharness.agents.plan_exec.orchestrator import run_plan_exec
 from evaharness.agents.plan_exec.planner import Planner, make_planner
 from evaharness.agents.plan_exec.replanner import Replanner, make_replanner, render_replan_context
@@ -46,6 +47,7 @@ __all__ = [
     "Replanner",
     "RunEvent",
     "RunEventAdapter",
+    "StreamCrashed",
     "SummaryEvent",
     "TaskEndEvent",
     "TaskExecutor",
@@ -57,6 +59,7 @@ __all__ = [
     "make_planner",
     "make_react_executor",
     "make_replanner",
+    "merge_named_streams",
     "render_replan_context",
     "render_task_prompt",
     "run_plan_exec",

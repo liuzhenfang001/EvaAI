@@ -12,5 +12,5 @@ ADR-0004 定了「顶层用 Plan-And-Executor 显式编排」，但没说「显�
 ## 后果
 
 - **编排进度不在任何 checkpoint 里**。`SqliteSaver` 保存的是每个 ReAct 任务图内部的 state（ADR-0007），而「plan 是什么、哪些 task 已完成、剩余队列」只在 Python 栈帧里。所以 T5 要跨重启恢复**编排**，仍需另加一个 run registry（按 `run_id` 存 RunJournal + 任务状态），或接受「恢复 = 重跑整条编排」。这是 T5 的先决条件，不是它能顺手解决的。
-- **T3 的并行批次是 `asyncio.gather`**，不是 LangGraph 的 superstep。好处是并发控制（信号量、分批）直接可写；代价是没有现成的超步级检查点。
+- **T3 的并行批次是队列合流，不是 LangGraph 的 superstep。** 实际用的是显式 `asyncio.create_task` + sentinel（`fanout.py`），**不是 `asyncio.gather`，也不是 `asyncio.TaskGroup`**——TaskGroup 在消费方提前放弃（SSE 断连）时会抛 `BaseExceptionGroup`，实测结论见 [ADR-0008](0008-run-journal-and-parallel-dispatch.md)。好处是并发控制（信号量、分批）直接可写；代价是没有现成的超步级检查点。
 - 编排器的输出契约是 `RunEvent` 判别联合，加新事件类型是加法。但**线上有两套 data 形状**（`messages` 帧是 `[chunk, metadata]` 数组以兼容 T1，其余是对象），T3 若要统一会是一次破坏性变更。

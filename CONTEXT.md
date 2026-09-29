@@ -53,7 +53,7 @@ _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 ### 可观测
 
 **RunJournal**：
-一次运行的 RunEvent 序列，EvaAI 的可观测载体。
+一次运行的 RunEvent 序列，EvaAI 的可观测载体。它记录的是**编排器的同一条事件流**（与 SSE 并列的两个消费者），不是另起一套埋点；可插拔的 store 决定它落在哪里（内存 / JSONL）。
 _Avoid_: trace, 日志, telemetry
 
 **RunEvent**：

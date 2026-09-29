@@ -20,18 +20,29 @@ from evaharness.agents.plan_exec.schemas import PlanTask, TaskResult, TerminalTa
 class MessagesEvent(BaseModel):
     """ReAct 执行单元的 token 增量。
 
-    沿用 T1 的线上形状：SSE 帧的 data 为 ``[chunk, metadata]``。
+    沿用 T1 的线上形状：SSE 帧的 data 为 ``[chunk, metadata]``（``task_id`` 由 SSE
+    层并进 ``metadata``，所以线上形状一字未改）。
+
+    ``task_id`` 是 T3 加的：并行派发后多个任务的 token 会交错到达，没有归属信息
+    前端就无法把增量分流到各自的气泡与时间线泳道。
     """
 
     type: Literal["messages"] = "messages"
+    task_id: str
     chunk: dict[str, Any]
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlanEvent(BaseModel):
-    """planner 产出的结构化计划。"""
+    """planner 产出的结构化计划。
+
+    ``run_id`` 是 T3 加的：前端要靠它把这次运行从 RunJournal 里拉回来重放。放在
+    首个事件上，是 run 级元信息最自然的位置——但若日后还要加更多 run 元信息
+    （起止时间、模型名等），应当升格为独立的 run 元事件，而不是继续往计划上堆。
+    """
 
     type: Literal["plan"] = "plan"
+    run_id: str
     tasks: list[PlanTask]
 
 

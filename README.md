@@ -9,16 +9,17 @@
 ```
 backend/
 ├── packages/harness/evaharness/   # 框架层（业务无关，可插拔机制）
-│   ├── agents/plan_exec/          # Plan-Exec 编排（planner / executor / replanner）
+│   ├── agents/plan_exec/          # Plan-Exec 编排（planner / executor / replanner / 并行合流）
 │   ├── checkpoint/                # checkpoint 持久化（SQLite）与保留策略
+│   ├── journal/                   # RunJournal + 可插拔 store（内存 / JSONL）
 │   └── agents/                    # ReAct 执行器装配 + 治理中间件
 ├── app/                           # 业务层（助手人设、具体工具/技能）
 └── tests/                         # 测试（含 test_harness_boundary.py 强制单向依赖）
-frontend/                          # Next.js 前端（聊天区 + 计划面板）
+frontend/                          # Next.js 前端（聊天区 + 计划面板 + 运行时间线）
 config.yaml / config.example.yaml  # 主配置（版本化，$ENV 引用）
 extensions_config.json             # 扩展（MCP / skills / middlewares）
 .env                               # 密钥
-data/                              # 运行时数据（SQLite checkpoint，已 gitignore）
+data/                              # 运行时数据（SQLite checkpoint + RunJournal，已 gitignore）
 ```
 
 ## 环境要求
@@ -48,7 +49,7 @@ uv run uvicorn app.gateway.app:app --port 8001
 cd ../frontend && npm install && npm run dev
 ```
 
-浏览器打开 <http://localhost:3000>，发「现在几点？」应看到：右侧计划面板出现 planner 拆出的任务卡，卡片状态随执行推进，聊天区流式吐字并显示工具调用标记，最后面板落到汇总。
+浏览器打开 <http://localhost:3000>，发「现在几点？」应看到：右侧计划面板出现 planner 拆出的任务卡，卡片状态随执行推进，聊天区流式吐字并显示工具调用标记，下方时间线逐步记录每一步 trace，最后面板落到汇总。面板顶部还能从「回放历史运行」里把往次运行整条拉回来重放（记录落在 `data/journal/`）。
 
 也可用 VSCode 调试：`.vscode/launch.json` 提供「后端: uvicorn」「前端: full stack」等配置，F5 直接起。
 
@@ -73,7 +74,7 @@ MVP 剩余工作按端到端打穿的**垂直切片**交付，对应 GitHub Issu
 
 - [x] **T1**（#1）端到端最小聊天链路：浏览器发消息 → 流式回复 + 调用一个纯函数工具
 - [x] **T2**（#2）Plan-Exec 编排（单任务）：planner 出计划 → ReAct 执行单元逐个执行 → replanner 判定 → 汇总，全程可在计划面板观察
-- [ ] **T3**（#4）subagent 并行 + 运行时间线
+- [x] **T3**（#4）subagent 并行 + 运行时间线：无依赖任务按批并行派发（ADR-0008），RunJournal 落盘并支持按 run_id 回放
 - [ ] **T4**（#3）工具集（文件操作 + web_search/web_fetch）
 - [ ] **T5**（#5）中断与恢复
 - [ ] **T6**（#6）四维度验收收口

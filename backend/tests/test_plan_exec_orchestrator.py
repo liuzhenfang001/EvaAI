@@ -197,8 +197,135 @@ async def test_executor_without_terminal_event_is_recorded_failed():
 
 
 # --------------------------------------------------------------------------- #
-# replanner：只判继续/结束
+# 并行派发（T3）
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_independent_tasks_are_dispatched_in_one_batch():
+    """互不依赖的任务同时执行——「多个无依赖子任务并行」这条验收的直接证据。"""
+    plan = Plan(tasks=[_task("t1"), _task("t2"), _task("t3")])
+    executor = FakeExecutor()
+
+    await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=executor))
+
+    assert executor.max_concurrent == 3
+
+
+@pytest.mark.asyncio
+async def test_dependency_chain_never_overlaps():
+    """有依赖的任务不能并行——串成一条链时并发峰值必须是 1。"""
+    plan = Plan(tasks=[_task("t1"), _task("t2", depends_on=["t1"]), _task("t3", depends_on=["t2"])])
+    executor = FakeExecutor()
+
+    await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=executor))
+
+    assert executor.max_concurrent == 1
+    assert [inv.task.id for inv in executor.invocations] == ["t1", "t2", "t3"]
+
+
+@pytest.mark.asyncio
+async def test_batch_boundary_sits_between_a_task_and_its_dependents():
+    """批边界由依赖决定：t3 依赖 t1，所以它只能在 {t1,t2} 整批跑完之后开始。"""
+    plan = Plan(tasks=[_task("t1"), _task("t2"), _task("t3", depends_on=["t1"])])
+    executor = FakeExecutor()
+
+    events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=executor))
+
+    assert [event.task_id for event in _by_type(events, "task_start")] == ["t1", "t2", "t3"], (
+        "task_start 按计划顺序发，不是按完成顺序"
+    )
+    assert executor.max_concurrent == 2, "前一批是 t1+t2；t3 等到下一批才跑"
+    ends = [event.task_id for event in _by_type(events, "task_end")]
+    assert ends.index("t1") < ends.index("t3")
+    assert ends.index("t2") < ends.index("t3")
+
+
+@pytest.mark.asyncio
+async def test_whole_batch_starts_before_any_of_it_ends():
+    """一批任务先全部进入 running，面板才能同时看到多张卡片在跑。"""
+    plan = Plan(tasks=[_task("t1"), _task("t2")])
+
+    events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=FakeExecutor()))
+
+    names = _types(events)
+    assert names[: names.index("task_end")].count("task_start") == 2
+
+
+@pytest.mark.asyncio
+async def test_messages_carry_the_task_they_belong_to():
+    """并行后 token 交错到达，归属信息是前端分流到各自气泡的唯一依据。"""
+    plan = Plan(tasks=[_task("t1"), _task("t2")])
+    executor = FakeExecutor(
+        {
+            "t1": ExecutorStep(messages=("甲一", "甲二")),
+            "t2": ExecutorStep(messages=("乙一", "乙二")),
+        }
+    )
+
+    events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=executor))
+
+    messages = _by_type(events, "messages")
+    assert {event.task_id for event in messages} == {"t1", "t2"}
+    by_task = {tid: [e.chunk["content"] for e in messages if e.task_id == tid] for tid in ("t1", "t2")}
+    assert by_task == {"t1": ["甲一", "甲二"], "t2": ["乙一", "乙二"]}
+
+
+@pytest.mark.asyncio
+async def test_a_crashed_executor_fails_only_its_own_task():
+    """执行单元抛了（不合约定）：只有它自己的任务失败，同批其他任务照常完成。"""
+    plan = Plan(tasks=[_task("t1"), _task("t2")])
+    executor = FakeExecutor(
+        {
+            "t1": ExecutorStep(messages=("半截",), raises=RuntimeError("执行单元炸了")),
+            "t2": ExecutorStep(output="我照跑"),
+        }
+    )
+
+    events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=executor))
+
+    summary = _by_type(events, "summary")[0]
+    assert summary.failed == ["t1"]
+    assert dict((r.task_id, r.status) for r in summary.results) == {"t1": "failed", "t2": "done"}
+    failed = [event for event in _by_type(events, "task_end") if event.status == "failed"][0]
+    assert "执行单元炸了" in failed.error, "真实错误信息要留下，不能只报「未返回终态」"
+
+
+# --------------------------------------------------------------------------- #
+# run_id
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_run_id_is_reported_on_the_plan_event_and_shared_by_all_tasks():
+    plan = Plan(tasks=[_task("t1"), _task("t2")])
+    executor = FakeExecutor()
+
+    events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=executor))
+
+    plan_event = _by_type(events, "plan")[0]
+    assert plan_event.run_id
+    assert {inv.run_id for inv in executor.invocations} == {plan_event.run_id}
+
+
+@pytest.mark.asyncio
+async def test_caller_supplied_run_id_is_used_verbatim():
+    """调用方指定 run_id 是为了让 RunJournal 与前端用同一个 id 定位这次运行。"""
+    plan = Plan(tasks=[_task("t1")])
+
+    events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=FakeExecutor(), run_id="run-abc"))
+
+    assert _by_type(events, "plan")[0].run_id == "run-abc"
+
+
+# --------------------------------------------------------------------------- #
+# replanner：只判继续/结束，每批一次
+# --------------------------------------------------------------------------- #
+#
+# T3 起就绪任务不再一个一个跑，而是**一批一起跑**，于是 replanner 的咨询时机变成
+# 「批与批之间，且下游还有活可干时」。下面几条因此都用**有依赖**的计划（t1 → t2 → …）：
+# 只有上游批次结束、下游还有就绪任务时，「继续还是结束」才是个真问题。
+# 用互不依赖的计划会一批跑完、没有人剩下——那时不该问（见紧邻的这条测试）。
 
 
 @pytest.mark.asyncio
@@ -210,6 +337,24 @@ async def test_replanner_not_called_when_no_ready_task_remains():
     await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=FakeExecutor(), replanner=replanner))
 
     assert replanner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_replanner_not_called_when_the_whole_plan_ran_in_one_batch():
+    """互不依赖的任务一批跑完，没有「接下来还干不干」这个问题。
+
+    这条是 T3 的语义变更点：同样的计划在 T2（串行派发）下会分两轮、问一次 replanner。
+    并行之后它们合成一批，问了也只能得到「没活了」——所以不问才是对的。
+    """
+    plan = Plan(tasks=[_task("t1"), _task("t2")])
+    replanner = FakeReplanner()
+    executor = FakeExecutor()
+
+    events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=executor, replanner=replanner))
+
+    assert [inv.task.id for inv in executor.invocations] == ["t1", "t2"]
+    assert replanner.calls == []
+    assert _by_type(events, "summary")[0].status == "completed"
 
 
 @pytest.mark.asyncio
@@ -225,7 +370,7 @@ async def test_replanner_not_called_when_remaining_tasks_are_blocked():
 
 @pytest.mark.asyncio
 async def test_replanner_continue_keeps_loop_going():
-    plan = Plan(tasks=[_task("t1"), _task("t2")])
+    plan = Plan(tasks=[_task("t1"), _task("t2", depends_on=["t1"])])
     replanner = FakeReplanner([ReplanDecision(should_continue=True, reason="还有正事")])
     executor = FakeExecutor()
 
@@ -238,7 +383,7 @@ async def test_replanner_continue_keeps_loop_going():
 
 @pytest.mark.asyncio
 async def test_replanner_sees_results_so_far():
-    plan = Plan(tasks=[_task("t1"), _task("t2")])
+    plan = Plan(tasks=[_task("t1"), _task("t2", depends_on=["t1"])])
     replanner = FakeReplanner([ReplanDecision(should_continue=True)])
     executor = FakeExecutor({"t1": ExecutorStep(output="第一段的产物")})
 
@@ -252,7 +397,7 @@ async def test_replanner_sees_results_so_far():
 @pytest.mark.asyncio
 async def test_replan_event_surfaces_the_decision():
     """replanner 的判定必须可见——否则用户只看到「已跳过」，不知道为什么。"""
-    plan = Plan(tasks=[_task("t1"), _task("t2")])
+    plan = Plan(tasks=[_task("t1"), _task("t2", depends_on=["t1"])])
     replanner = FakeReplanner([ReplanDecision(should_continue=True, reason="还有正事")])
 
     events = await collect(
@@ -267,7 +412,7 @@ async def test_replan_event_surfaces_the_decision():
 
 @pytest.mark.asyncio
 async def test_replan_event_precedes_the_next_task():
-    plan = Plan(tasks=[_task("t1"), _task("t2")])
+    plan = Plan(tasks=[_task("t1"), _task("t2", depends_on=["t1"])])
     replanner = FakeReplanner([ReplanDecision(should_continue=True)])
 
     events = await collect(
@@ -291,7 +436,7 @@ async def test_no_replan_event_when_replanner_is_not_consulted():
 
 @pytest.mark.asyncio
 async def test_replanner_stop_skips_remaining_and_status_is_stopped():
-    plan = Plan(tasks=[_task("t1"), _task("t2"), _task("t3")])
+    plan = Plan(tasks=[_task("t1"), _task("t2", depends_on=["t1"]), _task("t3", depends_on=["t2"])])
     replanner = FakeReplanner([ReplanDecision(should_continue=False, reason="已经够了")])
     executor = FakeExecutor()
 

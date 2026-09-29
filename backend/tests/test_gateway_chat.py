@@ -33,12 +33,13 @@ def _executor(*replies):
     return make_react_executor(model)
 
 
-async def _collect(request, *, plan, replanner=None, replies=("答案",)):
+async def _collect(request, *, plan, replanner=None, replies=("答案",), run_id=None):
     events = run_plan_exec(
         request,
         planner=FakePlanner(plan),
         executor=_executor(*replies),
         replanner=replanner,
+        run_id=run_id,
     )
     return [frame async for frame in sse_consumer(events)]
 
@@ -73,6 +74,17 @@ async def test_answer_text_flows_through_as_streamed_tokens():
 
 
 @pytest.mark.asyncio
+async def test_plan_frame_carries_a_run_id():
+    """前端要靠它把这次运行从 RunJournal 拉回来重放（回放的凭据）。"""
+    plan = Plan(tasks=[PlanTask(id="t1", description="查时间")])
+
+    frames = await _collect("现在几点？", plan=plan, run_id="run-abc")
+    _, data = _parse(frames[0])
+
+    assert data["run_id"] == "run-abc"
+
+
+@pytest.mark.asyncio
 async def test_messages_frame_keeps_t1_wire_shape():
     plan = Plan(tasks=[PlanTask(id="t1", description="查时间")])
 
@@ -82,6 +94,7 @@ async def test_messages_frame_keeps_t1_wire_shape():
     assert isinstance(data, list) and len(data) == 2
     assert isinstance(data[0], dict) and "content" in data[0]
     assert isinstance(data[1], dict)
+    assert data[1]["task_id"] == "t1", "并行后 token 交错，归属只能靠这个键"
 
 
 @pytest.mark.asyncio
