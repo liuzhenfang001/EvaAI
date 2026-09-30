@@ -1,53 +1,97 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { API_URL } from "@/core/api/config";
 import { parseSSE } from "@/core/api/stream";
+import { applyFrame, emptyRunState, JournalEntry, RunState, toFrame } from "@/core/chat/runState";
 import {
-  applyFrame,
-  emptyRunState,
-  JournalEntry,
-  RunRef,
-  RunState,
-  toFrame,
-} from "@/core/chat/runState";
+  deleteThread,
+  fetchThreadJournal,
+  listThreads,
+  newThreadId,
+  readCurrentThreadId,
+  rememberCurrentThreadId,
+  renameThread,
+  ThreadSummary,
+} from "@/core/chat/session";
 
 export * from "@/core/chat/runState";
+export type { ThreadSummary } from "@/core/chat/session";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
+
+/** 把一串事件喂给投影函数，返回重建好的状态——实时与回放共用这一条路径。 */
+function project(entries: Iterable<{ event: unknown }>, from: RunState): RunState {
+  let state = from;
+  for (const entry of entries) {
+    const frame = toFrame(entry.event as Parameters<typeof toFrame>[0]);
+    state = applyFrame(state, frame.event, frame.data);
+  }
+  return state;
+}
 
 export function useChat() {
   const [state, setState] = useState<RunState>(emptyRunState);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [runs, setRuns] = useState<RunRef[]>([]);
-  /** 当前画面是不是从 RunJournal 回放出来的（用于提示「这不是实时对话」）。 */
-  const [replayedFrom, setReplayedFrom] = useState<string | null>(null);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
 
-  const refreshRuns = useCallback(async () => {
+  const refreshThreads = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_URL}/runs`);
-      if (!resp.ok) return;
-      setRuns((await resp.json()) as RunRef[]);
+      setThreads(await listThreads());
     } catch {
-      // 历史列表拉不到不该打断聊天。
+      // 会话列表拉不到不该打断聊天。
     }
   }, []);
 
+  const openThread = useCallback(async (threadId: string) => {
+    setError(null);
+    try {
+      const entries = await fetchThreadJournal(threadId);
+      setState(project(entries, emptyRunState()));
+      rememberCurrentThreadId(threadId);
+    } catch (e) {
+      // localStorage 里可能留着一个早已被删掉的 id——清掉它，回到新会话。
+      rememberCurrentThreadId(null);
+      setState(emptyRunState());
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const startNewThread = useCallback(() => {
+    // 只换本地 id：会话由第一条消息跑起来时自然落进 journal，不需要先建实体。
+    setState(emptyRunState());
+    rememberCurrentThreadId(newThreadId());
+    setError(null);
+  }, []);
+
   useEffect(() => {
-    void refreshRuns();
-  }, [refreshRuns]);
+    void refreshThreads();
+    const saved = readCurrentThreadId();
+    if (saved) {
+      void openThread(saved);
+    } else {
+      rememberCurrentThreadId(newThreadId());
+    }
+  }, [refreshThreads, openThread]);
+
+  // run_start 会带回（或由服务端生成）会话 id——记住它，刷新后才接得上。
+  useEffect(() => {
+    if (state.threadId) {
+      rememberCurrentThreadId(state.threadId);
+    }
+  }, [state.threadId]);
 
   const send = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || streaming) return;
       setError(null);
-      setReplayedFrom(null);
-      // 面板语义是「当前这一次运行」，所以每次 send 重置运行级状态；
-      // 对话记录保留，新的一轮追加在后面。
+      // 刻意**不**在这里塞用户气泡：run_start 事件会造它。这样实时与历史都由同一个
+      // 事件产生同一条气泡，不会出现「刷新后长得不一样」。
       setState((prev) => ({
         ...emptyRunState(),
-        messages: [...prev.messages, { role: "user", content: trimmed, tools: [] }],
+        threadId: prev.threadId,
+        messages: prev.messages,
       }));
       setStreaming(true);
 
@@ -55,7 +99,7 @@ export function useChat() {
         const resp = await fetch(`${API_URL}/chat/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: trimmed }),
+          body: JSON.stringify({ content: trimmed, thread_id: state.threadId }),
         });
         if (!resp.ok || !resp.body) {
           throw new Error(`请求失败：HTTP ${resp.status}`);
@@ -73,33 +117,39 @@ export function useChat() {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setStreaming(false);
-        void refreshRuns();
+        void refreshThreads();
       }
     },
-    [streaming, refreshRuns],
+    [streaming, state.threadId, refreshThreads],
   );
 
-  const replay = useCallback(async (runId: string) => {
-    if (!runId) return;
-    setError(null);
-    try {
-      const resp = await fetch(`${API_URL}/runs/${encodeURIComponent(runId)}/journal`);
-      if (!resp.ok) {
-        throw new Error(`拉取运行记录失败：HTTP ${resp.status}`);
+  const rename = useCallback(
+    async (threadId: string, title: string) => {
+      try {
+        await renameThread(threadId, title);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
       }
-      const entries = (await resp.json()) as JournalEntry[];
-      // 回放 = 把存下来的事件喂给与实时**同一个**投影函数。
-      let next = emptyRunState();
-      for (const entry of entries) {
-        const frame = toFrame(entry.event);
-        next = applyFrame(next, frame.event, frame.data);
+      await refreshThreads();
+    },
+    [refreshThreads],
+  );
+
+  const remove = useCallback(
+    async (threadId: string) => {
+      try {
+        await deleteThread(threadId);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
       }
-      setState(next);
-      setReplayedFrom(runId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
+      // 删掉的正是当前会话时就开一段新的，别让界面停在已经不存在的会话上。
+      if (threadId === state.threadId) {
+        startNewThread();
+      }
+      await refreshThreads();
+    },
+    [state.threadId, startNewThread, refreshThreads],
+  );
 
   return {
     messages: state.messages,
@@ -107,12 +157,17 @@ export function useChat() {
     summary: state.summary,
     replan: state.replan,
     runId: state.runId,
+    threadId: state.threadId,
     timeline: state.timeline,
+    threads,
     streaming,
     error,
-    runs,
-    replayedFrom,
     send,
-    replay,
+    openThread,
+    startNewThread,
+    rename,
+    remove,
   };
 }
+
+export type { JournalEntry };

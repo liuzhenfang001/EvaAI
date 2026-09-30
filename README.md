@@ -15,11 +15,11 @@ backend/
 │   └── agents/                    # ReAct 执行器装配 + 治理中间件
 ├── app/                           # 业务层（助手人设、具体工具/技能）
 └── tests/                         # 测试（含 test_harness_boundary.py 强制单向依赖）
-frontend/                          # Next.js 前端（聊天区 + 计划面板 + 运行时间线）
+frontend/                          # Next.js 前端（会话栏 + 聊天区 + 浮动任务面板）
 config.yaml / config.example.yaml  # 主配置（版本化，$ENV 引用）
 extensions_config.json             # 扩展（MCP / skills / middlewares）
 .env                               # 密钥
-data/                              # 运行时数据（SQLite checkpoint + RunJournal，已 gitignore）
+data/                              # 运行时数据（SQLite checkpoint + data/journal/<会话>/，已 gitignore）
 ```
 
 ## 环境要求
@@ -42,14 +42,14 @@ cp ../.env.example ../.env        # 填入 DEEPSEEK_API_KEY
 # 3. 跑测试
 uv run pytest
 
-# 4. 启动后端（端口 8001）
-uv run uvicorn app.gateway.app:app --port 8001
+# 4. 启动后端（端口 8010；8001/3000 被参照项目 DeerFlow 占着）
+uv run uvicorn app.gateway.app:app --port 8010
 
-# 5. 启动前端（另开终端，端口 3000）
+# 5. 启动前端（另开终端，端口 3010；package.json 里已固定）
 cd ../frontend && npm install && npm run dev
 ```
 
-浏览器打开 <http://localhost:3000>，发「现在几点？」应看到：右侧计划面板出现 planner 拆出的任务卡，卡片状态随执行推进，聊天区流式吐字并显示工具调用标记，下方时间线逐步记录每一步 trace，最后面板落到汇总。面板顶部还能从「回放历史运行」里把往次运行整条拉回来重放（记录落在 `data/journal/`）。
+浏览器打开 <http://localhost:3010>，发「现在几点？」应看到：右侧浮动面板淡入，出现 planner 拆出的任务卡，卡片状态随执行推进，聊天区流式吐字并显示工具调用标记，下方时间线逐步记录每一步 trace，最后落到汇总。左侧会话栏可开新对话、在历史对话间切换、重命名或删除；**刷新页面或重启后端后，当前会话的整段对话都会重建**（记录落在 `data/journal/<会话>/`）。
 
 也可用 VSCode 调试：`.vscode/launch.json` 提供「后端: uvicorn」「前端: full stack」等配置，F5 直接起。
 
@@ -62,6 +62,7 @@ cd ../frontend && npm install && npm run dev
 - **配置**：三层（.env / config.yaml / extensions_config.json），启动加载 + `config_version` 校验，无热重载。
 - **前端包管理**：原定 pnpm，因本机 corepack 权限受限（EPERM）改用 npm；`package-lock.json` 为准。
 - **外网访问**：本机 `gh` 与 `npm install` 需走本地代理 `127.0.0.1:7890`。
+- **端口**：后端 8010、前端 3010——8001 / 3000 留给本机的参照项目 DeerFlow。前端访问后端的地址只写在 [frontend/src/core/api/config.ts](frontend/src/core/api/config.ts) 一处，要换地址就在 `frontend/.env.local` 里设 `NEXT_PUBLIC_API_URL`（Next.js 只从前端目录读环境文件，仓库根的 `.env` 是给后端用的）。
 
 ## 文档
 
@@ -78,5 +79,6 @@ MVP 剩余工作按端到端打穿的**垂直切片**交付，对应 GitHub Issu
 - [ ] **T4**（#3）工具集（文件操作 + web_search/web_fetch）
 - [ ] **T5**（#5）中断与恢复
 - [ ] **T6**（#6）四维度验收收口
+- [x] **T7**（#7）会话与对话历史：多会话新建/切换/重命名/删除，整段对话落盘并可在刷新/重启后重建（ADR-0009）
 
 已完成的水平里程碑：M0 脚手架 + 边界测试 + 配置加载 + 反射加载；M1 模型工厂 + ReAct 执行器（LangChain `create_agent` + 6 个硬核中间件）。

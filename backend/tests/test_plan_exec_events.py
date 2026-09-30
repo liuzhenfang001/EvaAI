@@ -14,6 +14,7 @@ from evaharness.agents.plan_exec.events import (
     PlanEvent,
     ReplanEvent,
     RunEventAdapter,
+    RunStartEvent,
     SummaryEvent,
     TaskEndEvent,
     TaskStartEvent,
@@ -40,14 +41,27 @@ def test_messages_event_roundtrips_with_type_discriminator():
     assert parsed == event
 
 
-def test_plan_event_roundtrips():
-    event = PlanEvent(
+def test_run_start_event_roundtrips():
+    """``run_start`` 是每个 run 的首帧，承载 run 身份与用户原始请求。"""
+    event = RunStartEvent(
         run_id="run-abc",
-        tasks=[PlanTask(id="t1", description="查时间", completion_criteria=["给出 ISO 时间"])],
+        thread_id="th-xyz",
+        request="现在几点？",
+        started_at="2026-09-29T10:00:00+00:00",
     )
     dumped, parsed = _roundtrip(event)
+    assert dumped["type"] == "run_start"
+    assert dumped["thread_id"] == "th-xyz"
+    assert parsed.request == "现在几点？"
+
+
+def test_plan_event_roundtrips():
+    """``plan`` 只管计划内容——run 身份自 T7 起由 ``run_start`` 承载。"""
+    event = PlanEvent(tasks=[PlanTask(id="t1", description="查时间", completion_criteria=["给出 ISO 时间"])])
+    dumped, parsed = _roundtrip(event)
+
     assert dumped["type"] == "plan"
-    assert dumped["run_id"] == "run-abc"
+    assert "run_id" not in dumped, "run_id 已迁到 run_start，不该在 plan 上留影子"
     assert parsed.tasks[0].id == "t1"
     assert parsed.tasks[0].completion_criteria == ["给出 ISO 时间"]
 
@@ -109,14 +123,43 @@ def test_missing_discriminator_is_rejected():
         RunEventAdapter.validate_python({"chunk": {}, "metadata": {}})
 
 
-def test_every_event_exposes_a_type_literal():
-    """SSE 事件名直接取自 type，所以每个变体都必须自带它。"""
-    for event in [
+def _all_events() -> list:
+    return [
+        RunStartEvent(run_id="r", thread_id="t", request="q", started_at="2026-09-29T10:00:00+00:00"),
         MessagesEvent(task_id="t1", chunk={}),
-        PlanEvent(run_id="run-abc", tasks=[]),
+        PlanEvent(tasks=[]),
         TaskStartEvent(task_id="t1", description="d"),
         TaskEndEvent(task_id="t1", status="done"),
         SummaryEvent(status="completed", results=[]),
         ReplanEvent(should_continue=True, reason=""),
-    ]:
+    ]
+
+
+def test_every_event_exposes_a_type_literal():
+    """SSE 事件名直接取自 type，所以每个变体都必须自带它。"""
+    for event in _all_events():
         assert isinstance(event.type, str) and event.type
+
+
+@pytest.mark.parametrize(
+    ("event_type", "expected"),
+    [
+        ("run_start", "message"),
+        ("messages", "message"),
+        ("task_end", "message"),
+        ("plan", "trace"),
+        ("task_start", "trace"),
+        ("summary", "trace"),
+        ("replan", "trace"),
+    ],
+)
+def test_every_event_declares_a_routing_category(event_type, expected):
+    """``category`` 是给消费者路由用的桶（ADR-0009）：
+
+    ``message`` 桶承载对话内容（用户请求、助手正文、任务产出与成败），
+    ``trace`` 桶只讲编排过程。对话投影过滤 ``message``；trace 投影取**全部**。
+    """
+    event = next(e for e in _all_events() if e.type == event_type)
+
+    assert event.category == expected
+    assert event.model_dump(mode="json")["category"] == expected, "category 必须随事件上线"

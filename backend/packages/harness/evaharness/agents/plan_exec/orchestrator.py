@@ -21,12 +21,14 @@ T3 起派发是**按批并发**的：一次把所有就绪任务一起发出去�
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from evaharness.agents.plan_exec.events import (
     PlanEvent,
     ReplanEvent,
     RunEvent,
+    RunStartEvent,
     SummaryEvent,
     TaskEndEvent,
     TaskStartEvent,
@@ -75,6 +77,7 @@ async def run_plan_exec(
     executor: TaskExecutor,
     replanner: Replanner | None = None,
     run_id: str | None = None,
+    thread_id: str | None = None,
 ) -> AsyncIterator[RunEvent]:
     """跑完一次 Plan-Exec，产出完整的事件流。
 
@@ -85,17 +88,30 @@ async def run_plan_exec(
         replanner: 每批任务后判定「继续还是结束」的角色；``None`` 表示从不叫停。
         run_id: 本次运行的标识；缺省自生。调用方指定它是为了让 RunJournal 与前端
             用同一个 id 定位这次运行。
+        thread_id: 本次运行所属的**会话**标识；缺省自生。语义与参照项目一致：
+            **给了就用，没给就生成**——所以前端可以先本地生成再传进来，也可以
+            完全不管、从 ``RunStartEvent`` 里学到服务端生成的那个。
 
     Yields:
-        ``PlanEvent`` → 逐批的 ``TaskStartEvent`` / ``MessagesEvent`` / ``TaskEndEvent``
-        → ``ReplanEvent`` → ``SummaryEvent``。
+        ``RunStartEvent`` → ``PlanEvent`` → 逐批的 ``TaskStartEvent`` /
+        ``MessagesEvent`` / ``TaskEndEvent`` → ``ReplanEvent`` → ``SummaryEvent``。
 
     Raises:
         PlanValidationError: 计划结构性非法（此时 ``PlanEvent`` 已产出，前端仍能看到坏计划）。
     """
     run_id = run_id or uuid4().hex[:12]
+    thread_id = thread_id or uuid4().hex[:12]
+    # 在调用 planner **之前**产出：客户端立刻拿到会话标识与用户气泡，而 planner 失败
+    # 时这次运行也留得下痕迹（journal 里已有 run_start，不是一片空白）。
+    yield RunStartEvent(
+        run_id=run_id,
+        thread_id=thread_id,
+        request=request,
+        started_at=datetime.now(UTC).isoformat(),
+    )
+
     plan = await planner(request)
-    yield PlanEvent(run_id=run_id, tasks=plan.tasks)
+    yield PlanEvent(tasks=plan.tasks)
     validate_plan(plan)
 
     status: dict[str, str] = {task.id: "pending" for task in plan.tasks}
@@ -118,6 +134,7 @@ async def run_plan_exec(
                 task=task,
                 dependency_results=tuple(results[dep] for dep in task.depends_on if dep in results),
                 run_id=run_id,
+                thread_id=thread_id,
             )
             for task in batch
         ]

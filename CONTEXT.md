@@ -46,11 +46,19 @@ _Avoid_: 重规划器, 动态规划器
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T6**：
-当前六条垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3），引用时写全「T3（#4）」以免混淆。
+**T1–T7**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7），引用时写全「T3（#4）」以免混淆。T7 是原 MVP（T1–T6）之外新增的一条，见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测
+
+**thread（会话）**：
+一段连续的对话，由多次运行组成。它不是一张表里的实体，而是 RunJournal 按 `thread_id` 的分组——会话由第一次运行落盘时自然形成。
+_Avoid_: session, conversation, 聊天记录
+
+**checkpoint thread**：
+**任务级** checkpoint 的坐标，形如 `{会话}:{运行}:{任务}`。与「会话」同名但不同层：它标的是「哪个会话的哪次运行的哪个任务的那张 ReAct 图」，用于隔离图状态、给 LoopDetection 分桶、以及让「删会话」能按前缀连带清理。它出现在 RunEvent 的 `metadata.thread_id` 里（那是 LangGraph 自己的键，我们原样保留）。
+_Avoid_: 与「thread（会话）」混用；读 `metadata.thread_id` 时误以为它是会话 id
 
 **RunJournal**：
 一次运行的 RunEvent 序列，EvaAI 的可观测载体。它记录的是**编排器的同一条事件流**（与 SSE 并列的两个消费者），不是另起一套埋点；可插拔的 store 决定它落在哪里（内存 / JSONL）。

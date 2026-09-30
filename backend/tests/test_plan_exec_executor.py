@@ -26,8 +26,13 @@ def _task(**overrides):
     return PlanTask(**{**base, **overrides})
 
 
-def _invocation(task=None, deps=(), run_id="run-abc"):
-    return TaskInvocation(task=task or _task(), dependency_results=tuple(deps), run_id=run_id)
+def _invocation(task=None, deps=(), run_id="run-abc", thread_id="th-1"):
+    return TaskInvocation(
+        task=task or _task(),
+        dependency_results=tuple(deps),
+        run_id=run_id,
+        thread_id=thread_id,
+    )
 
 
 def _model(*responses):
@@ -197,7 +202,7 @@ async def test_executor_writes_checkpoint_under_run_scoped_thread_id():
     threads = set()
     async for tup in saver.alist(None):
         threads.add(tup.config["configurable"]["thread_id"])
-    assert threads == {"run-1:t1", "run-2:t1"}
+    assert threads == {"th-1:run-1:t1", "th-1:run-2:t1"}
 
 
 @pytest.mark.asyncio

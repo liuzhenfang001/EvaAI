@@ -53,7 +53,15 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   tools: ToolTrace[];
-  /** 并行后每个任务一个气泡，靠它把增量分流到正确的那一个。 */
+  /**
+   * 气泡的**唯一身份**：`runId:taskId`。
+   *
+   * 必须带上 run——任务 id 只在一次运行内唯一，同一个会话的第二轮又会有 `t1`。
+   * 只按 `taskId` 认气泡的话，第二轮的输出会被追加进第一轮那个气泡里（看起来就是
+   * 「上一轮的回答被覆盖了」）。
+   */
+  key?: string;
+  /** 展示用的泳道标签（`t1` / `t2`）。**会跨运行重复，不能当身份用。** */
   taskId?: string;
 }
 
@@ -62,8 +70,10 @@ export interface RunState {
   plan: PlanTaskView[] | null;
   summary: RunSummary | null;
   replan: ReplanView | null;
-  /** 回放的凭据：由 `plan` 事件下发，也是查 RunJournal 的键。 */
+  /** 本次运行的标识；由 `run_start` 下发。 */
   runId: string | null;
+  /** 本段对话所属的会话；由 `run_start` 下发（服务端也可能替我们生成）。 */
+  threadId: string | null;
   timeline: TimelineStep[];
 }
 
@@ -88,12 +98,19 @@ export const emptyRunState = (): RunState => ({
   summary: null,
   replan: null,
   runId: null,
+  threadId: null,
   timeline: [],
 });
 
 // --------------------------------------------------------------------------- #
 // 线上载荷
 // --------------------------------------------------------------------------- #
+
+interface RawRunStart {
+  run_id: string;
+  thread_id: string;
+  request: string;
+}
 
 interface RawPlan {
   run_id: string;
@@ -136,6 +153,8 @@ interface RawChunk {
 
 export function applyFrame(state: RunState, name: string, data: unknown): RunState {
   switch (name) {
+    case "run_start":
+      return applyRunStart(state, data as RawRunStart);
     case "plan":
       return applyPlan(state, data as RawPlan);
     case "task_start":
@@ -171,27 +190,44 @@ function pushStep(timeline: TimelineStep[], step: Omit<TimelineStep, "seq">): Ti
   return [...timeline, { seq: timeline.length + 1, ...step }];
 }
 
-function ensureBubble(messages: ChatMessage[], taskId: string): ChatMessage[] {
-  if (!taskId || messages.some((m) => m.role === "assistant" && m.taskId === taskId)) {
+/** 气泡身份：任务 id 只在一次运行内唯一，所以必须带上 run。 */
+function bubbleKey(runId: string | null, taskId: string): string {
+  return `${runId ?? ""}:${taskId}`;
+}
+
+function ensureBubble(messages: ChatMessage[], key: string, taskId: string): ChatMessage[] {
+  if (!taskId || messages.some((m) => m.role === "assistant" && m.key === key)) {
     return messages;
   }
-  return [...messages, { role: "assistant", content: "", tools: [], taskId }];
+  return [...messages, { role: "assistant", content: "", tools: [], key, taskId }];
 }
 
 function patchBubble(
   messages: ChatMessage[],
+  key: string,
   taskId: string,
   fn: (message: ChatMessage) => ChatMessage,
 ): ChatMessage[] {
-  return ensureBubble(messages, taskId).map((m) =>
-    m.role === "assistant" && m.taskId === taskId ? fn(m) : m,
+  return ensureBubble(messages, key, taskId).map((m) =>
+    m.role === "assistant" && m.key === key ? fn(m) : m,
   );
+}
+
+function applyRunStart(state: RunState, data: RawRunStart): RunState {
+  // 新的一次运行：运行级状态（计划 / 时间线 / 汇总 / 复核）整体重置，只把对话接上。
+  // 用户气泡**由事件产生**而不是 send 时自己塞——这是「历史与实时逐字一致」的关键：
+  // 两条路径都由同一个 run_start 造出这条气泡。
+  return {
+    ...emptyRunState(),
+    threadId: data.thread_id,
+    runId: data.run_id,
+    messages: [...state.messages, { role: "user", content: data.request, tools: [] }],
+  };
 }
 
 function applyPlan(state: RunState, data: RawPlan): RunState {
   return {
     ...state,
-    runId: data.run_id,
     plan: data.tasks.map((task) => ({
       id: task.id,
       description: task.description,
@@ -212,7 +248,7 @@ function applyPlan(state: RunState, data: RawPlan): RunState {
 function applyTaskStart(state: RunState, data: RawTaskStart): RunState {
   return {
     ...state,
-    messages: ensureBubble(state.messages, data.task_id),
+    messages: ensureBubble(state.messages, bubbleKey(state.runId, data.task_id), data.task_id),
     timeline: pushStep(state.timeline, { taskId: data.task_id, kind: "start", text: "开始执行" }),
   };
 }
@@ -220,13 +256,14 @@ function applyTaskStart(state: RunState, data: RawTaskStart): RunState {
 function applyMessages(state: RunState, data: unknown): RunState {
   const [chunk, metadata] = (Array.isArray(data) ? data : [{}, {}]) as [RawChunk, Record<string, unknown>];
   const taskId = typeof metadata?.task_id === "string" ? metadata.task_id : "";
+  const key = bubbleKey(state.runId, taskId);
   let messages = state.messages;
   let timeline = state.timeline;
 
   // 1. 文本增量（AIMessageChunk）
   const content = chunk?.content;
   if (typeof content === "string" && content.length > 0 && chunk.type !== "tool") {
-    messages = patchBubble(messages, taskId, (m) => ({ ...m, content: m.content + content }));
+    messages = patchBubble(messages, key, taskId, (m) => ({ ...m, content: m.content + content }));
   }
 
   // 2. 工具调用（完整 tool_calls 或流式 tool_call_chunks）
@@ -239,14 +276,14 @@ function applyMessages(state: RunState, data: unknown): RunState {
   if (toolCalls) {
     for (const call of toolCalls) {
       const label = call.name ?? "工具";
-      messages = patchBubble(messages, taskId, (m) => ({ ...m, tools: [...m.tools, { label: `调用 ${label}` }] }));
+      messages = patchBubble(messages, key, taskId, (m) => ({ ...m, tools: [...m.tools, { label: `调用 ${label}` }] }));
       timeline = pushStep(timeline, { taskId, kind: "tool", text: `🔧 调用 ${label}` });
     }
   }
 
   // 3. 工具结果（ToolMessage）
   if (chunk?.type === "tool" && typeof chunk.name === "string") {
-    messages = patchBubble(messages, taskId, (m) => ({ ...m, tools: [...m.tools, { label: `${chunk.name} 完成` }] }));
+    messages = patchBubble(messages, key, taskId, (m) => ({ ...m, tools: [...m.tools, { label: `${chunk.name} 完成` }] }));
     timeline = pushStep(timeline, { taskId, kind: "result", text: `${chunk.name} 返回结果` });
   }
 
@@ -272,7 +309,7 @@ function applyTaskEnd(state: RunState, data: RawTaskEnd): RunState {
   // 失败必须在主对话里可见，否则「结果汇总返回用户」这条验收不成立。
   const messages =
     data.status === "failed"
-      ? patchBubble(state.messages, data.task_id, (m) => ({
+      ? patchBubble(state.messages, bubbleKey(state.runId, data.task_id), data.task_id, (m) => ({
           ...m,
           content: `${m.content}${m.content ? "\n\n" : ""}[任务 ${data.task_id} 失败：${data.error ?? "未知原因"}]`,
         }))

@@ -13,8 +13,10 @@ from langgraph.checkpoint.base.id import uuid6
 
 from evaharness.checkpoint.sqlite_saver import (
     checkpoint_timestamp_ms,
+    delete_session_checkpoints,
     make_sqlite_checkpointer,
     prune_checkpoints,
+    task_thread_id,
 )
 
 _UUID_EPOCH_100NS = 0x01B21DD213814000
@@ -182,3 +184,48 @@ async def test_prune_skips_threads_with_unparsable_checkpoint_ids(tmp_path):
 
         assert await prune_checkpoints(saver, retention_days=1e-9) == 0
         assert await _threads(saver) == {"weird:t1"}
+
+
+# --------------------------------------------------------------------------- #
+# task_thread_id 与按会话清理
+# --------------------------------------------------------------------------- #
+
+
+def test_task_thread_id_is_session_run_task():
+    """三段都要：任务区分同一次运行内的多个任务，运行区分同一会话的多次运行，
+    会话让血缘可见并让「删会话」能按前缀连带清理。"""
+    assert task_thread_id("th-1", "run-1", "t2") == "th-1:run-1:t2"
+
+
+@pytest.mark.asyncio
+async def test_delete_session_checkpoints_removes_only_that_session(tmp_path):
+    async with make_sqlite_checkpointer(tmp_path / "cp.sqlite") as saver:
+        await _write_thread(saver, task_thread_id("th-1", "run-1", "t1"), _uuid6_at(1_700_000_000_000))
+        await _write_thread(saver, task_thread_id("th-1", "run-1", "t2"), _uuid6_at(1_700_000_000_000))
+        await _write_thread(saver, task_thread_id("th-2", "run-1", "t1"), _uuid6_at(1_700_000_000_000))
+
+        deleted = await delete_session_checkpoints(saver, thread_id="th-1")
+
+        assert deleted == 2
+        assert await _threads(saver) == {"th-2:run-1:t1"}
+
+
+@pytest.mark.asyncio
+async def test_delete_session_checkpoints_does_not_touch_a_longer_session_id(tmp_path):
+    """前缀带分隔符——删 ``abc`` 不能误伤 ``abcd``。"""
+    async with make_sqlite_checkpointer(tmp_path / "cp.sqlite") as saver:
+        await _write_thread(saver, task_thread_id("abc", "run-1", "t1"), _uuid6_at(1_700_000_000_000))
+        await _write_thread(saver, task_thread_id("abcd", "run-1", "t1"), _uuid6_at(1_700_000_000_000))
+
+        await delete_session_checkpoints(saver, thread_id="abc")
+
+        assert await _threads(saver) == {"abcd:run-1:t1"}
+
+
+@pytest.mark.asyncio
+async def test_delete_session_checkpoints_is_a_noop_for_unknown_sessions(tmp_path):
+    async with make_sqlite_checkpointer(tmp_path / "cp.sqlite") as saver:
+        await _write_thread(saver, task_thread_id("th-1", "run-1", "t1"), _uuid6_at(1_700_000_000_000))
+
+        assert await delete_session_checkpoints(saver, thread_id="th-none") == 0
+        assert await _threads(saver) == {"th-1:run-1:t1"}

@@ -5,11 +5,13 @@
 """
 
 from evaharness.agents.plan_exec.events import (
+    EventCategory,
     MessagesEvent,
     PlanEvent,
     ReplanEvent,
     RunEvent,
     RunEventAdapter,
+    RunStartEvent,
     SummaryEvent,
     TaskEndEvent,
     TaskStartEvent,
@@ -45,8 +47,10 @@ __all__ = [
     "Planner",
     "ReplanDecision",
     "Replanner",
+    "EventCategory",
     "RunEvent",
     "RunEventAdapter",
+    "RunStartEvent",
     "StreamCrashed",
     "SummaryEvent",
     "TaskEndEvent",

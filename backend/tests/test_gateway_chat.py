@@ -33,13 +33,14 @@ def _executor(*replies):
     return make_react_executor(model)
 
 
-async def _collect(request, *, plan, replanner=None, replies=("答案",), run_id=None):
+async def _collect(request, *, plan, replanner=None, replies=("答案",), run_id=None, thread_id=None):
     events = run_plan_exec(
         request,
         planner=FakePlanner(plan),
         executor=_executor(*replies),
         replanner=replanner,
         run_id=run_id,
+        thread_id=thread_id,
     )
     return [frame async for frame in sse_consumer(events)]
 
@@ -51,7 +52,8 @@ async def test_full_chain_emits_plan_messages_task_summary_end():
     frames = await _collect("现在几点？", plan=plan)
     names = [_parse(frame)[0] for frame in frames]
 
-    assert names[0] == "plan"
+    assert names[0] == "run_start", "首帧是 run 元事件（带回 thread_id 与用户请求）"
+    assert names[1] == "plan"
     assert names[-1] == "end"
     for expected in ("task_start", "messages", "task_end", "summary"):
         assert expected in names, f"缺少 {expected} 帧：{names}"
@@ -74,14 +76,17 @@ async def test_answer_text_flows_through_as_streamed_tokens():
 
 
 @pytest.mark.asyncio
-async def test_plan_frame_carries_a_run_id():
-    """前端要靠它把这次运行从 RunJournal 拉回来重放（回放的凭据）。"""
+async def test_run_start_frame_carries_the_run_and_thread_ids():
+    """前端靠它认领会话、并把这次运行从 RunJournal 拉回来（回放的凭据）。"""
     plan = Plan(tasks=[PlanTask(id="t1", description="查时间")])
 
-    frames = await _collect("现在几点？", plan=plan, run_id="run-abc")
-    _, data = _parse(frames[0])
+    frames = await _collect("现在几点？", plan=plan, run_id="run-abc", thread_id="th-abc")
+    name, data = _parse(frames[0])
 
+    assert name == "run_start"
     assert data["run_id"] == "run-abc"
+    assert data["thread_id"] == "th-abc"
+    assert data["request"] == "现在几点？"
 
 
 @pytest.mark.asyncio
@@ -107,7 +112,7 @@ async def test_plan_frame_carries_the_structured_plan():
     )
 
     frames = await _collect("先查时间再算剩余小时", plan=plan)
-    _, data = _parse(frames[0])
+    _, data = next((n, d) for n, d in (_parse(f) for f in frames) if n == "plan")
 
     assert [task["id"] for task in data["tasks"]] == ["t1", "t2"]
     assert data["tasks"][1]["depends_on"] == ["t1"]
@@ -137,6 +142,6 @@ async def test_invalid_plan_yields_error_frame_after_plan_frame():
     frames = await _collect("现在几点？", plan=plan)
     names = [_parse(frame)[0] for frame in frames]
 
-    assert names == ["plan", "error", "end"]
-    _, data = _parse(frames[1])
+    assert names == ["run_start", "plan", "error", "end"]
+    _, data = _parse(frames[2])
     assert data["name"] == PlanValidationError.__name__

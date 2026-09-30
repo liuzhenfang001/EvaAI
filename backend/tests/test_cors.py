@@ -11,9 +11,9 @@ async def test_cors_preflight_allows_local_and_lan_origins():
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         for origin in (
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://192.168.1.6:3000",
+            "http://localhost:3010",
+            "http://127.0.0.1:3010",
+            "http://192.168.1.6:3010",
         ):
             resp = await client.options(
                 "/chat/stream",

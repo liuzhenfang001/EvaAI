@@ -1,8 +1,13 @@
-"""SQLite checkpoint 持久化与保留策略。
+"""SQLite checkpoint 持久化与保留/清理策略。
 
-持久化的是**每个 ReAct 任务图内部的 state**（按 ``run_id:task_id`` 分 thread），
+持久化的是**每个 ReAct 任务图内部的 state**（按 ``{会话}:{运行}:{任务}`` 分 thread），
 不是编排进度——编排进度活在 Python 栈帧里（见 ADR-0006 / ADR-0007）。所以这里
-买不到「重启后接着跑编排」，买到的是任务级状态的durability与 T5 的地基。
+买不到「重启后接着跑编排」，买到的是任务级状态的 durability 与 T5 的地基。
+
+**thread 坐标自带会话**（``task_thread_id``）有两个用处：一是血缘清楚（看 id 就知道
+属于哪个会话的哪次运行的哪个任务），二是**删会话时能按前缀把它的 checkpoint 一起清掉**
+（``delete_session_checkpoints``）——否则 journal 真删了、checkpoint 还在，要等保留
+策略（默认 7 天）才扫得到。
 
 保留策略靠**从 checkpoint id 反解时间**：langgraph 的 ``checkpoints`` 表只有
 ``thread_id / checkpoint_ns / checkpoint_id / …``，没有时间戳列。checkpoint id 是
@@ -22,9 +27,43 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover - 仅为类型标注，运行期不导入
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+_SEPARATOR = ":"
+
 # UUID 纪元（1582-10-15）与 Unix 纪元之间的 100ns 间隔数。
 _UUID_EPOCH_100NS = 0x01B21DD213814000
 _100NS_PER_MS = 10_000
+
+
+def task_thread_id(thread_id: str, run_id: str, task_id: str) -> str:
+    """任务级 checkpoint 的 thread 坐标：``{会话}:{运行}:{任务}``。
+
+    三个都要，缺一不可：**任务**区分同一次运行里的多个任务（图状态不能互相污染）；
+    **运行**区分同一会话的多次运行（同一个 ``t1`` 会在每轮重新出现）；**会话**让血缘
+    可见，并让「删会话」能按前缀连带清理（见 :func:`delete_session_checkpoints`）。
+
+    这个坐标还兼任 ``LoopDetectionMiddleware`` 的分桶键——它按 ``runtime.context``
+    的 ``thread_id`` 分桶且进程内不重置，共用一个桶会把正常的工具调用累加到硬上限、
+    误判成循环。
+    """
+    return _SEPARATOR.join((thread_id, run_id, task_id))
+
+
+async def delete_session_checkpoints(saver: Any, *, thread_id: str) -> int:
+    """删除某个会话的全部任务级 checkpoint，返回删除的 thread 数。
+
+    前缀带分隔符，避免把 ``abc`` 的清理误伤到 ``abcd``。
+    """
+    if not thread_id:
+        return 0
+    prefix = f"{thread_id}{_SEPARATOR}"
+    doomed: list[str] = []
+    async for checkpoint_tuple in saver.alist(None):
+        candidate = str(checkpoint_tuple.config["configurable"]["thread_id"])
+        if candidate.startswith(prefix) and candidate not in doomed:
+            doomed.append(candidate)
+    for candidate in doomed:
+        await saver.adelete_thread(candidate)
+    return len(doomed)
 
 
 def checkpoint_timestamp_ms(checkpoint_id: Any) -> int | None:
@@ -84,4 +123,10 @@ async def prune_checkpoints(saver: Any, *, retention_days: float) -> int:
     return len(stale)
 
 
-__all__ = ["checkpoint_timestamp_ms", "make_sqlite_checkpointer", "prune_checkpoints"]
+__all__ = [
+    "checkpoint_timestamp_ms",
+    "delete_session_checkpoints",
+    "make_sqlite_checkpointer",
+    "prune_checkpoints",
+    "task_thread_id",
+]

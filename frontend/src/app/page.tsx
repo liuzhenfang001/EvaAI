@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   PlanTaskView,
   ReplanView,
-  RunRef,
   RunSummary,
   TaskStatus,
+  ThreadSummary,
   TimelineKind,
   TimelineStep,
   useChat,
@@ -29,6 +29,61 @@ const STEP_ICON: Record<TimelineKind, string> = {
 };
 
 const EMPTY_STEP: TimelineStep[] = [];
+
+// --------------------------------------------------------------------------- #
+// 左侧：会话列表
+// --------------------------------------------------------------------------- #
+
+function SessionList({
+  threads,
+  currentId,
+  busy,
+  onOpen,
+  onNew,
+  onRename,
+  onRemove,
+}: {
+  threads: ThreadSummary[];
+  currentId: string | null;
+  busy: boolean;
+  onOpen: (threadId: string) => void;
+  onNew: () => void;
+  onRename: (thread: ThreadSummary) => void;
+  onRemove: (thread: ThreadSummary) => void;
+}) {
+  return (
+    <aside className="sessions">
+      <button className="new-thread" onClick={onNew} disabled={busy}>
+        ＋ 开启新对话
+      </button>
+
+      {threads.length === 0 && <div className="sessions-empty">还没有历史对话</div>}
+
+      <ul className="thread-list">
+        {threads.map((thread) => (
+          <li key={thread.thread_id} className={`thread-item ${thread.thread_id === currentId ? "active" : ""}`}>
+            <button className="thread-open" onClick={() => onOpen(thread.thread_id)} disabled={busy}>
+              <span className="thread-title">{thread.title}</span>
+              {thread.preview && <span className="thread-preview">{thread.preview}</span>}
+            </button>
+            <span className="thread-actions">
+              <button title="重命名" onClick={() => onRename(thread)} disabled={busy}>
+                ✎
+              </button>
+              <button title="删除" onClick={() => onRemove(thread)} disabled={busy}>
+                🗑
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  );
+}
+
+// --------------------------------------------------------------------------- #
+// 右侧：任务编排（浮动覆盖层，可收起）
+// --------------------------------------------------------------------------- #
 
 function TaskCard({ task }: { task: PlanTaskView }) {
   return (
@@ -70,88 +125,108 @@ function Timeline({ steps }: { steps: TimelineStep[] }) {
   );
 }
 
-function PlanPanel({
+function TaskPanel({
+  open,
+  onToggle,
   plan,
   summary,
   replan,
   timeline,
-  runs,
-  streaming,
-  replayedFrom,
-  onReplay,
 }: {
+  open: boolean;
+  onToggle: () => void;
   plan: PlanTaskView[] | null;
   summary: RunSummary | null;
   replan: ReplanView | null;
   timeline: TimelineStep[];
-  runs: RunRef[];
-  streaming: boolean;
-  replayedFrom: string | null;
-  onReplay: (runId: string) => void;
 }) {
   const done = plan?.filter((t) => t.status === "done").length ?? 0;
 
   return (
-    <aside className="plan-panel">
-      <div className="plan-head">
-        <h2>计划</h2>
-        {plan && (
-          <span className="plan-progress">
-            {done}/{plan.length}
-          </span>
-        )}
-      </div>
+    <>
+      {/* 收起后留一个细把手，别让面板「消失得找不回来」。 */}
+      <button className={`panel-handle ${open ? "hidden" : ""}`} onClick={onToggle} title="展开任务编排">
+        ‹
+      </button>
 
-      <select
-        className="run-picker"
-        value=""
-        disabled={streaming}
-        onChange={(e) => e.target.value && onReplay(e.target.value)}
-      >
-        <option value="">回放历史运行…</option>
-        {runs.map((run) => (
-          <option key={run.run_id} value={run.run_id}>
-            {run.run_id} · {new Date(run.updated_at).toLocaleTimeString()}
-          </option>
-        ))}
-      </select>
-
-      {replayedFrom && <div className="replay-banner">回放：{replayedFrom}（历史记录，非实时）</div>}
-
-      {!plan && <div className="plan-empty">发送一条消息，这里会显示 planner 拆出的任务。</div>}
-
-      <div className="task-list">
-        {plan?.map((task) => (
-          <TaskCard key={task.id} task={task} />
-        ))}
-      </div>
-
-      <Timeline steps={timeline} />
-
-      {replan && (
-        <div className="plan-replan">
-          复核：{replan.shouldContinue ? "继续" : "结束"}
-          {replan.reason && <span className="replan-reason">（{replan.reason}）</span>}
-        </div>
-      )}
-
-      {summary && (
-        <div className="plan-foot">
-          <div className={`summary-status ${summary.status}`}>
-            {summary.status === "completed" ? "全部完成" : summary.status === "partial" ? "部分完成" : "已提前结束"}
+      <aside className={`task-panel ${open ? "open" : ""}`} aria-hidden={!open}>
+        <div className="panel-head">
+          <h2>任务编排</h2>
+          <div className="panel-head-right">
+            {plan && (
+              <span className="plan-progress">
+                {done}/{plan.length}
+              </span>
+            )}
+            <button className="panel-close" onClick={onToggle} title="收起">
+              ›
+            </button>
           </div>
-          {summary.failed.length > 0 && <div className="plan-foot-line">失败：{summary.failed.join("、")}</div>}
-          {summary.skipped.length > 0 && <div className="plan-foot-line">跳过：{summary.skipped.join("、")}</div>}
         </div>
-      )}
-    </aside>
+
+        {!plan && <div className="plan-empty">发一条消息，这里会实时显示 planner 拆出的任务。</div>}
+
+        <div className="task-list">
+          {plan?.map((task) => (
+            <TaskCard key={task.id} task={task} />
+          ))}
+        </div>
+
+        <Timeline steps={timeline} />
+
+        {replan && (
+          <div className="plan-replan">
+            复核：{replan.shouldContinue ? "继续" : "结束"}
+            {replan.reason && <span className="replan-reason">（{replan.reason}）</span>}
+          </div>
+        )}
+
+        {summary && (
+          <div className="plan-foot">
+            <div className={`summary-status ${summary.status}`}>
+              {summary.status === "completed" ? "全部完成" : summary.status === "partial" ? "部分完成" : "已提前结束"}
+            </div>
+            {summary.failed.length > 0 && <div className="plan-foot-line">失败：{summary.failed.join("、")}</div>}
+            {summary.skipped.length > 0 && <div className="plan-foot-line">跳过：{summary.skipped.join("、")}</div>}
+          </div>
+        )}
+      </aside>
+    </>
   );
 }
 
+// --------------------------------------------------------------------------- #
+// 页面
+// --------------------------------------------------------------------------- #
+
 export default function Home() {
-  const { messages, plan, summary, replan, timeline, runs, streaming, error, replayedFrom, send, replay } =
-    useChat();
+  const {
+    messages,
+    plan,
+    summary,
+    replan,
+    timeline,
+    threads,
+    threadId,
+    streaming,
+    error,
+    send,
+    openThread,
+    startNewThread,
+    rename,
+    remove,
+  } = useChat();
   const [input, setInput] = useState("");
+  const [panelOpen, setPanelOpen] = useState(false);
+  const autoShown = useRef(false);
+
+  // 只在**首次**有数据时自动弹一次；之后完全由用户按钮控制，不再打扰。
+  useEffect(() => {
+    if (plan && !autoShown.current) {
+      autoShown.current = true;
+      setPanelOpen(true);
+    }
+  }, [plan]);
 
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -160,11 +235,33 @@ export default function Home() {
     setInput("");
   };
 
+  const onRename = (thread: ThreadSummary) => {
+    const title = window.prompt("给这段对话起个名字", thread.title);
+    if (title && title.trim()) void rename(thread.thread_id, title.trim());
+  };
+
+  const onRemove = (thread: ThreadSummary) => {
+    // 真删不可逆（ADR-0009），所以必须确认。
+    if (window.confirm(`删除「${thread.title}」？这段对话的记录会被永久删除。`)) {
+      void remove(thread.thread_id);
+    }
+  };
+
   // planner 用 structured output，不产 token 流；没有这段占位会莫名静默。
   const planning = streaming && !plan;
 
   return (
     <div className="app">
+      <SessionList
+        threads={threads}
+        currentId={threadId}
+        busy={streaming}
+        onOpen={(id) => void openThread(id)}
+        onNew={startNewThread}
+        onRename={onRename}
+        onRemove={onRemove}
+      />
+
       <main className="chat">
         <header className="chat-header">
           <h1>EvaAI</h1>
@@ -177,16 +274,16 @@ export default function Home() {
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="role">
-                {m.role === "user" ? "你" : m.taskId ? `EvaAI · ${m.taskId}` : "EvaAI"}
-              </div>
+              <div className="role">{m.role === "user" ? "你" : m.taskId ? `EvaAI · ${m.taskId}` : "EvaAI"}</div>
               {(m.content || m.tools.length > 0) && (
                 <div className="bubble">
                   {m.content}
                   {m.tools.length > 0 && (
                     <div className="tools">
                       {m.tools.map((t, j) => (
-                        <span key={j} className="tool">🔧 {t.label}</span>
+                        <span key={j} className="tool">
+                          🔧 {t.label}
+                        </span>
                       ))}
                     </div>
                   )}
@@ -217,15 +314,13 @@ export default function Home() {
         </form>
       </main>
 
-      <PlanPanel
+      <TaskPanel
+        open={panelOpen}
+        onToggle={() => setPanelOpen((open) => !open)}
         plan={plan}
         summary={summary}
         replan={replan}
         timeline={timeline ?? EMPTY_STEP}
-        runs={runs}
-        streaming={streaming}
-        replayedFrom={replayedFrom}
-        onReplay={replay}
       />
     </div>
   );

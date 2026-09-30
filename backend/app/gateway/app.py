@@ -1,6 +1,6 @@
 """EvaAI gateway：FastAPI 入口 + 内嵌 Plan-Exec 编排 + SSE 流式。
 
-启动：``uv run uvicorn app.gateway.app:app --port 8001``
+启动：``uv run uvicorn app.gateway.app:app --port 8010``
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.gateway.routers import chat, runs
+from app.gateway.routers import chat, threads
 from app.prompts import EXECUTOR_PROMPT, PLANNER_PROMPT, REPLANNER_PROMPT
 from app.tools.builtin import get_current_time
 from evaharness.agents.plan_exec import make_planner, make_react_executor, make_replanner
@@ -55,6 +55,8 @@ async def lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
         checkpoint_path = _resolve_path(app_config.checkpoint.db_path)
         saver = await stack.enter_async_context(make_sqlite_checkpointer(checkpoint_path))
+        # 挂到 state：删会话时要按前缀连带清掉它的任务级 checkpoint。
+        app.state.checkpointer = saver
         await _prune_checkpoints(saver, app_config.checkpoint.retention_days)
 
         journal_config = _resolve_journal_config(app_config.journal)
@@ -95,7 +97,7 @@ def create_app() -> FastAPI:
         allow_private_network=True,
     )
     app.include_router(chat.router)
-    app.include_router(runs.router)
+    app.include_router(threads.router)
     return app
 
 

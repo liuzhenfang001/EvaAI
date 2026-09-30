@@ -32,13 +32,37 @@ def _by_type(events, event_type):
 
 
 @pytest.mark.asyncio
-async def test_plan_event_is_first():
+async def test_run_start_is_first_and_carries_the_request():
+    """``run_start`` 打头，且带着用户原始请求——对话历史里「用户说了什么」的唯一来源。
+
+    它在调用 planner **之前**产出，所以客户端不必等规划完才知道自己在哪个会话，
+    planner 挂掉时这次运行也留得下痕迹。
+    """
     plan = Plan(tasks=[_task("t1")])
     events = await collect(run_plan_exec("问时间", planner=FakePlanner(plan), executor=FakeExecutor()))
 
-    assert events[0].type == "plan"
-    assert [task.id for task in events[0].tasks] == ["t1"]
-    assert events[-1].type == "summary"
+    assert _types(events) == ["run_start", "plan", "task_start", "task_end", "summary"]
+    assert events[0].request == "问时间"
+    assert events[0].run_id and events[0].thread_id and events[0].started_at
+    assert [task.id for task in events[1].tasks] == ["t1"]
+
+
+@pytest.mark.asyncio
+async def test_thread_id_is_generated_when_not_supplied():
+    plan = Plan(tasks=[_task("t1")])
+    events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=FakeExecutor()))
+
+    assert _by_type(events, "run_start")[0].thread_id
+
+
+@pytest.mark.asyncio
+async def test_caller_supplied_thread_id_is_used_verbatim():
+    """语义与参照项目一致：给了就用，没给就生成。"""
+    plan = Plan(tasks=[_task("t1")])
+
+    events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=FakeExecutor(), thread_id="th-abc"))
+
+    assert _by_type(events, "run_start")[0].thread_id == "th-abc"
 
 
 @pytest.mark.asyncio
@@ -49,7 +73,7 @@ async def test_single_task_plan_runs_exactly_one_execution_and_summarizes():
 
     events = await collect(run_plan_exec("现在几点", planner=FakePlanner(plan), executor=executor))
 
-    assert _types(events) == ["plan", "task_start", "messages", "messages", "task_end", "summary"]
+    assert _types(events) == ["run_start", "plan", "task_start", "messages", "messages", "task_end", "summary"]
     assert len(executor.invocations) == 1
     terminal = _by_type(events, "task_end")[0]
     assert terminal.status == "done"
@@ -297,15 +321,16 @@ async def test_a_crashed_executor_fails_only_its_own_task():
 
 
 @pytest.mark.asyncio
-async def test_run_id_is_reported_on_the_plan_event_and_shared_by_all_tasks():
+async def test_run_id_is_reported_on_run_start_and_shared_by_all_tasks():
+    """run 身份统一由 ``run_start`` 承载——T3 曾把它挂在 ``plan`` 上，那是权宜之计。"""
     plan = Plan(tasks=[_task("t1"), _task("t2")])
     executor = FakeExecutor()
 
     events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=executor))
 
-    plan_event = _by_type(events, "plan")[0]
-    assert plan_event.run_id
-    assert {inv.run_id for inv in executor.invocations} == {plan_event.run_id}
+    start = _by_type(events, "run_start")[0]
+    assert start.run_id
+    assert {inv.run_id for inv in executor.invocations} == {start.run_id}
 
 
 @pytest.mark.asyncio
@@ -315,7 +340,7 @@ async def test_caller_supplied_run_id_is_used_verbatim():
 
     events = await collect(run_plan_exec("req", planner=FakePlanner(plan), executor=FakeExecutor(), run_id="run-abc"))
 
-    assert _by_type(events, "plan")[0].run_id == "run-abc"
+    assert _by_type(events, "run_start")[0].run_id == "run-abc"
 
 
 # --------------------------------------------------------------------------- #
@@ -490,11 +515,12 @@ async def test_invalid_plan_emits_plan_event_then_raises():
         async for event in stream:
             seen.append(event)
 
-    assert [event.type for event in seen] == ["plan"]
+    assert [event.type for event in seen] == ["run_start", "plan"]
 
 
 @pytest.mark.asyncio
-async def test_planner_exception_propagates_without_plan_event():
+async def test_planner_exception_propagates_before_any_plan_event():
+    """planner 挂了也要先留下 ``run_start``：这次运行发生过，只是没规划出来。"""
     planner = FakePlanner(error=RuntimeError("planner 挂了"))
     stream = run_plan_exec("req", planner=planner, executor=FakeExecutor())
 
@@ -503,7 +529,7 @@ async def test_planner_exception_propagates_without_plan_event():
         async for event in stream:
             seen.append(event)
 
-    assert seen == []
+    assert [event.type for event in seen] == ["run_start"]
 
 
 # --------------------------------------------------------------------------- #

@@ -10,6 +10,7 @@ from evaharness.agents.plan_exec.events import (
     MessagesEvent,
     PlanEvent,
     ReplanEvent,
+    RunStartEvent,
     SummaryEvent,
     TaskEndEvent,
     TaskStartEvent,
@@ -63,16 +64,27 @@ def test_map_run_event_messages_keeps_t1_wire_shape():
     assert _parse(frame) == ("messages", [chunk, {"langgraph_node": "model", "task_id": "t1"}])
 
 
-def test_map_run_event_plan_frame():
-    event = PlanEvent(
+def test_map_run_event_run_start_frame():
+    event = RunStartEvent(
         run_id="run-abc",
-        tasks=[PlanTask(id="t1", description="查时间", completion_criteria=["给出时间"])],
+        thread_id="th-xyz",
+        request="现在几点？",
+        started_at="2026-09-29T10:00:00+00:00",
     )
+    name, data = _parse(map_run_event(event))
+
+    assert name == "run_start"
+    assert data["thread_id"] == "th-xyz"
+    assert data["request"] == "现在几点？"
+
+
+def test_map_run_event_plan_frame():
+    event = PlanEvent(tasks=[PlanTask(id="t1", description="查时间", completion_criteria=["给出时间"])])
     name, data = _parse(map_run_event(event))
 
     assert name == "plan"
     assert data["type"] == "plan"
-    assert data["run_id"] == "run-abc"
+    assert data["category"] == "trace"
     assert data["tasks"][0]["id"] == "t1"
 
 
@@ -125,7 +137,8 @@ async def _from_list(events, *, error=None):
 @pytest.mark.asyncio
 async def test_sse_consumer_maps_events_then_ends():
     events = [
-        PlanEvent(run_id="run-abc", tasks=[PlanTask(id="t1", description="d")]),
+        RunStartEvent(run_id="r", thread_id="t", request="hi", started_at="2026-09-29T10:00:00+00:00"),
+        PlanEvent(tasks=[PlanTask(id="t1", description="d")]),
         TaskStartEvent(task_id="t1", description="d"),
         MessagesEvent(task_id="t1", chunk={"content": "hi"}),
         TaskEndEvent(task_id="t1", status="done", output="hi"),
@@ -134,7 +147,15 @@ async def test_sse_consumer_maps_events_then_ends():
 
     frames = await _drain(_from_list(events))
 
-    assert [_parse(f)[0] for f in frames] == ["plan", "task_start", "messages", "task_end", "summary", "end"]
+    assert [_parse(f)[0] for f in frames] == [
+        "run_start",
+        "plan",
+        "task_start",
+        "messages",
+        "task_end",
+        "summary",
+        "end",
+    ]
     assert _parse(frames[-1]) == ("end", None)
 
 
@@ -153,7 +174,7 @@ async def test_sse_consumer_does_not_swallow_cancellation():
     """硬取消（ADR-0005）必须穿过这一层——它继承 BaseException，不该变成 error 帧。"""
 
     async def cancelled():
-        yield PlanEvent(run_id="run-abc", tasks=[])
+        yield PlanEvent(tasks=[])
         raise asyncio.CancelledError
 
     frames = []

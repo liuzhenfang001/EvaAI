@@ -6,7 +6,7 @@
       "type": "debugpy",
       "request": "launch",
       "module": "uvicorn",
-      "args": ["app.gateway.app:app", "--port", "8001"],
+      "args": ["app.gateway.app:app", "--port", "8010"],
       "cwd": "${workspaceFolder}/backend",
       "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
       "console": "integratedTerminal",
@@ -23,7 +23,7 @@
       "name": "前端: 浏览器 (Chrome)",
       "type": "chrome",
       "request": "launch",
-      "url": "http://localhost:3000",
+      "url": "http://localhost:3010",
       "webRoot": "${workspaceFolder}/frontend"
     },
     {

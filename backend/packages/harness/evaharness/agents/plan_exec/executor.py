@@ -27,6 +27,7 @@ from langgraph.graph.state import CompiledStateGraph
 from evaharness.agents.plan_exec.events import MessagesEvent, RunEvent, TaskEndEvent
 from evaharness.agents.plan_exec.schemas import PlanTask, TaskResult
 from evaharness.agents.react import make_react_agent
+from evaharness.checkpoint import task_thread_id
 
 DEFAULT_EXECUTOR_PROMPT = (
     "You are a task executor inside a larger plan. Complete the single task you are given, "
@@ -42,6 +43,7 @@ class TaskInvocation:
     task: PlanTask
     dependency_results: tuple[TaskResult, ...]
     run_id: str
+    thread_id: str
 
 
 class TaskExecutor(Protocol):
@@ -125,7 +127,8 @@ def make_react_executor(
 
     async def execute(invocation: TaskInvocation, /) -> AsyncIterator[RunEvent]:
         task = invocation.task
-        thread_id = f"{invocation.run_id}:{task.id}"
+        # checkpoint 的坐标：会话 + 运行 + 任务，三者缺一不可（见 task_thread_id）。
+        thread_id = task_thread_id(invocation.thread_id, invocation.run_id, task.id)
         payload = {"messages": [HumanMessage(content=render_task_prompt(task, invocation.dependency_results))]}
         last_state: Mapping[str, Any] | None = None
         try:
