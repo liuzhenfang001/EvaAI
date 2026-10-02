@@ -26,6 +26,18 @@ from langchain_core.tools import tool
 from evaharness.agents.plan_exec.events import MessagesEvent, RunEvent, TaskEndEvent
 from evaharness.agents.plan_exec.executor import TaskInvocation
 from evaharness.agents.plan_exec.schemas import Plan, ReplanDecision, TaskResult
+from evaharness.config.app_config import AppConfig
+
+
+def fake_app_config(**summarization: Any) -> AppConfig:
+    """最小可用配置。模型 profile 只是占位——用到它的测试都注入 ``model_factory``。"""
+    return AppConfig.model_validate(
+        {
+            "config_version": 1,
+            "models": [{"name": "fake", "model": "fake"}],
+            "agent": {"summarization": {"enabled": False, **summarization}},
+        }
+    )
 
 
 class ToolCapableFake(GenericFakeChatModel):
@@ -140,6 +152,29 @@ class StructuredFake(ToolCapableFake):
         async def _call(messages):  # noqa: ANN001, ANN202
             model.seen_messages = list(messages)
             return model.result
+
+        return RunnableLambda(_call)
+
+
+class RoutingStructuredFake(StructuredFake):
+    """按 schema 分派结构化输出的假模型：planner 要 ``Plan``、replanner 要 ``ReplanDecision``。
+
+    一个实例只写一个 ``result`` 时，另一个 schema 会拿到**错类型**——而错误只会在
+    replanner 真被叫到的那一刻才炸（单任务计划永远不叫它），测试会静默走过。所以要同时
+    驱动 planner 与 replanner 时用这个。
+    """
+
+    plan: Any = None
+    decision: Any = None
+
+    def with_structured_output(self, schema, **kwargs):  # noqa: ANN001, ANN003, ANN201
+        self.structured_method = kwargs.get("method")
+        model = self
+        chosen = self.plan if getattr(schema, "__name__", "") == "Plan" else self.decision
+
+        async def _call(messages):  # noqa: ANN001, ANN202
+            model.seen_messages = list(messages)
+            return chosen
 
         return RunnableLambda(_call)
 

@@ -100,7 +100,16 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self._stop_reason: dict[str, str] = {}
 
     def consume_stop_reason(self, thread_id: str) -> str | None:
-        """取出并返回某线程触发的硬停原因（loop_capped）。"""
+        """取出并返回某线程触发的硬停原因（loop_capped）。
+
+        **今天只有测试在用它**——生产路径上没有任何消费者，而中间件实例在 T9 之后随请求
+        消失（ADR-0011），app 层更拿不到它。真实的可见信号是日志里那行 ``logger.error``
+        与「``tool_calls`` 被剥掉、模型被迫产出文本」这个行为。
+
+        曾经还有一条「写进 ``runtime.context['stop_reason']``」的旁路，T9 删掉了：主路径
+        传的是 ``LeadContext``（永远进不去那个 dict 分支），而它进得去的时候是在**改写
+        调用方给的对象**——把跨请求写种回中间件的路子，正是 T9 要消灭的。
+        """
         return self._stop_reason.pop(thread_id, None)
 
     def _apply(self, state: AgentState, runtime: Runtime) -> dict | None:
@@ -126,9 +135,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
         if count >= self.hard_limit:
             self._stop_reason[thread_id] = "loop_capped"
-            context = getattr(runtime, "context", None)
-            if isinstance(context, dict):
-                context["stop_reason"] = "loop_capped"
             logger.error("Loop hard limit reached — forcing stop (thread=%s)", thread_id)
             return {"messages": [_strip_tool_calls(last, _HARD_STOP_MSG)]}
 

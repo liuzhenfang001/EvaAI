@@ -49,14 +49,33 @@ _Avoid_: worker, ReAct 执行器
 中间步骤也不会回流到主对话——**上下文隔离才是它存在的理由**，不是「更快」。
 _Avoid_: worker, 任务 agent, child agent
 
+### 装配
+
+**建图工厂（AgentFactory）**：
+按**请求**构建图与角色的唯一入口——主图、子 agent 图、模型，以及封存路径的
+planner / 执行单元 / replanner。它只持有跨请求**必须**共享的建图参数（配置、业务工具、
+checkpointer），自己不持有任何图或模型。
+_Avoid_: agent 池, 图缓存, builder, 单例
+
+**每请求建图（per-request build）**：
+图与模型的寿命 = 一次请求 = 一条响应流。中间件的追踪状态因此不跨请求；**记忆不受影响**
+（记忆在 checkpointer 里，不在图里）。代价是请求期建图失败表现为 500 而不是 SSE 错误帧。
+**不做缓存**——缓存会把跨请求共享的中间件实例原样带回来。
+_Avoid_: 无状态图, rebuild, 重建, 热加载
+
+**启动期 smoke build（冒烟装配）**：
+启动时把图装配一遍再丢弃，只为把「装配连线断了」这类错误提前到起服务时，失败即拒绝启动。
+它**抓不到**工具重名、`state_schema` / `context_schema` 传错——不是正确性证明。
+_Avoid_: 自检, health check, 预热（warmup 会保留产物，这里不保留）
+
 ### 交付
 
 **垂直切片（tracer bullet）**：
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T8**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7），引用时写全「T3（#4）」以免混淆。T7 与 T8 都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)。
+**T1–T9**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7），引用时写全「T3（#4）」以免混淆。T7–T9 都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测
@@ -76,7 +95,8 @@ _Avoid_: session, conversation, 聊天记录
 | Plan-Exec 任务 | `{会话}:{运行}:{任务}` | 运行级（封存路径） |
 
 它也是 LoopDetection 的分桶键，并出现在 RunEvent 的 `metadata.thread_id` 里
-（那是 LangGraph 自己的键，我们原样保留）。
+（那是 LangGraph 自己的键，我们原样保留）。**账本本身活在每请求一份的中间件实例里**，
+随请求消失——所以坐标跨轮复用（`{会话}:lead` 就是）不会让账本跨轮累积。
 _Avoid_: 与「thread（会话）」混用；读 `metadata.thread_id` 时误以为它是会话 id
 
 **lane（泳道）**：

@@ -1,23 +1,29 @@
-"""两条 chat 路由的接线：谁跑什么、首尾帧是什么、有没有记账。
+"""两条 chat 路由的接线：谁跑什么、首尾帧是什么、有没有记账、每请求建几张图。
 
 ``test_gateway_chat.py`` 直接把生成器喂给 ``sse_consumer``，绕过了 FastAPI 这一层；
 这里补上被绕过的那一段——**接错线是这一类改动最容易犯又最难发现的错**（比如默认
 路由还指着封存的 Plan-Exec），而且它不会让任何单元测试变红。
+
+**注入契约是 ``app.state.agent_factory``**（不是图）：T9 起图是请求级产物，测试要能
+看见「每个请求各建了一张」。任何挂 ``chat.router`` 的裸 app 都必须给这个属性。
 """
 
+import itertools
 import json
+from typing import Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from langchain.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from plan_exec_fakes import FakePlanner, ToolCapableFake
+from plan_exec_fakes import RoutingStructuredFake, fake_app_config
 
+from app.gateway.agents import AgentFactory
 from app.gateway.routers import chat
-from evaharness.agents.lead_agent import LEAD_LANE, make_lead_agent
-from evaharness.agents.plan_exec import make_react_executor, make_replanner
-from evaharness.agents.plan_exec.schemas import Plan, PlanTask
+from evaharness.agents.lead_agent import LEAD_LANE
+from evaharness.agents.plan_exec.schemas import Plan, PlanTask, ReplanDecision
 from evaharness.journal.stores import MemoryJournalStore
 
 THREAD = "th-1"
@@ -34,21 +40,53 @@ def _parse(frame: str):
     return event, data
 
 
-def _client(store: MemoryJournalStore, app_config=None) -> httpx.AsyncClient:
-    """把 chat 路由挂在一个状态齐备的裸 app 上（不起 lifespan、不读配置文件）。"""
-    model = ToolCapableFake(messages=iter([AIMessage(content="现在是 18:04")]))
+def _fake_model(name: str | None = None) -> BaseChatModel:  # noqa: ARG001
+    """一个模型同时服务两条路径：主 Agent 要文本，planner / replanner 要结构化输出。"""
+    del name
+    return RoutingStructuredFake(
+        messages=itertools.cycle([AIMessage(content="现在是 18:04")]),
+        plan=Plan(tasks=[PlanTask(id="t1", description="查时间")]),
+        decision=ReplanDecision(should_continue=True, reason="继续"),
+    )
+
+
+class _RecordingFactory(AgentFactory):
+    """真工厂 + 记名册：让「每请求都建了新图」这条断言写得出来。
+
+    不内省编译产物、不 patch 建图函数——只是在真路径上多记一笔，所以红/绿都指向产品代码。
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.leads: list = []
+        self.plans: list = []
+
+    def lead(self):  # noqa: ANN201
+        graph = super().lead()
+        self.leads.append(graph)
+        return graph
+
+    def plan_exec(self):  # noqa: ANN201
+        roles = super().plan_exec()
+        self.plans.append(roles)
+        return roles
+
+
+def _client(store: MemoryJournalStore, journal_config=None) -> httpx.AsyncClient:
+    """把 chat 路由挂在一个状态齐备的裸 app 上（不起 lifespan、不读配置文件）。
+
+    checkpointer 在这里**显式共享**一个 ``InMemorySaver``：记忆本来就该跨请求活着，
+    而图是每请求新的一张。工厂挂在 ``client.factory`` 上供断言取用。
+    """
+    factory = _RecordingFactory(fake_app_config(), [], checkpointer=InMemorySaver(), model_factory=_fake_model)
     app = FastAPI()
     app.state.journal_store = store
-    app.state.journal_config = app_config
-    app.state.lead_agent = make_lead_agent(model, [], checkpointer=InMemorySaver())
-    app.state.planner = FakePlanner(Plan(tasks=[PlanTask(id="t1", description="查时间")]))
-    app.state.executor = make_react_executor(
-        ToolCapableFake(messages=iter([AIMessage(content="现在是 18:04")])),
-        checkpointer=InMemorySaver(),
-    )
-    app.state.replanner = make_replanner(ToolCapableFake(messages=iter([AIMessage(content="")])))
+    app.state.journal_config = journal_config
+    app.state.agent_factory = factory
     app.include_router(chat.router)
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    client.factory = factory  # type: ignore[attr-defined]
+    return client
 
 
 class _JournalConfig:
@@ -161,3 +199,38 @@ async def test_a_generated_thread_id_comes_back_in_run_start():
 
     _, data = _parse(resp.text.split("\n\n")[0])
     assert data["thread_id"]
+
+
+# --------------------------------------------------------------------------- #
+# 每请求建图（T9）
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_each_request_builds_its_own_lead_graph():
+    """**这条断言在 T9 之前根本写不出来**：那时 ``app.state`` 上挂的是图本身。
+
+    它守的是并发洞被消除的充分条件——两次请求拿到两张图，中间件实例自然是两套；
+    共享只会在「路由复用同一个编译产物」时重新出现（也是「不做缓存」那条决策的回归）。
+    """
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        await _post(client, "/chat/stream", "现在几点？")
+        await _post(client, "/chat/stream", "现在几点？")
+
+    leads = client.factory.leads
+    assert len(leads) == 2, "两个请求应当各建一张图"
+    assert leads[0] is not leads[1]
+
+
+@pytest.mark.asyncio
+async def test_each_request_builds_its_own_plan_roles():
+    """封存路径同样是每请求一份，而且三件套一起换。"""
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        await _post(client, "/chat/plan/stream", "现在几点？")
+        await _post(client, "/chat/plan/stream", "现在几点？")
+
+    plans = client.factory.plans
+    assert len(plans) == 2
+    assert plans[0].planner is not plans[1].planner
+    assert plans[0].executor is not plans[1].executor
+    assert plans[0].replanner is not plans[1].replanner

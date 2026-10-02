@@ -11,6 +11,10 @@
 
 封存不等于放弃——Plan-Exec 将来要以「主 Agent 的一个子能力」回来（见 ADR-0010），
 所以它的路由与测试原样留着，只是不再是默认。
+
+两条路由都在**请求路径上现建图**（`state.agent_factory`，见 ADR-0011），而不是共享
+lifespan 建好的那一张：中间件的追踪状态因此不跨请求。建图在返回 `StreamingResponse`
+**之前**发生，所以构造错误表现为 500，而不是一条坏掉的流。
 """
 
 from __future__ import annotations
@@ -46,6 +50,10 @@ class ChatRequest(BaseModel):
 async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     """跑一轮主 Agent 并以 SSE 流式返回。
 
+    图是**这个请求专属**的：``state.agent_factory.lead()`` 现建一张（连带子 agent 图与
+    模型），随这条流一起释放。请求之间因此不共享中间件实例——并发会话不会再互相写对方
+    的循环检测账本与兜底重试预算（ADR-0011）。
+
     同一条事件流喂两个消费者：SSE 给前端实时看，RunJournal 落盘供事后回放
     （ADR-0006 定的「一个产出两个消费」）。``run_id`` 与 ``thread_id`` 在这里生成并
     同时交给两者，所以前端拿到的 id 一定能查到对应的记录。
@@ -56,7 +64,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         request,
         run_lead_agent(
             body.content,
-            agent=state.lead_agent,
+            agent=state.agent_factory.lead(),
             run_id=uuid4().hex[:12],
             thread_id=thread_id,
         ),
@@ -66,16 +74,21 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
 
 @router.post("/plan/stream")
 async def plan_stream(body: ChatRequest, request: Request) -> StreamingResponse:
-    """Plan-Exec 封存路径：planner → 执行单元 → replanner → 汇总。"""
+    """Plan-Exec 封存路径：planner → 执行单元 → replanner → 汇总。
+
+    三件套同样是每请求现建，且**必须一起换**——执行单元在装配期把图闭包进了 ``execute``，
+    只换 planner / replanner 等于没换。
+    """
     state = request.app.state
     thread_id = _resolve_thread_id(body)
+    roles = state.agent_factory.plan_exec()
     return _stream(
         request,
         run_plan_exec(
             body.content,
-            planner=state.planner,
-            executor=state.executor,
-            replanner=state.replanner,
+            planner=roles.planner,
+            executor=roles.executor,
+            replanner=roles.replanner,
             run_id=uuid4().hex[:12],
             thread_id=thread_id,
         ),

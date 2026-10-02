@@ -90,8 +90,11 @@ def make_react_executor(
 ) -> TaskExecutor:
     """构建基于 ReAct 的默认执行单元。
 
-    图在装配期建**一次**，所有任务共用（有 checkpointer 时状态按 thread 隔离，
-    无 checkpointer 时每任务本来就是全新输入），T3 的并行批次也共享同一个图。
+    图在本执行单元**实例内**建一次，该实例的所有任务共用（有 checkpointer 时状态按
+    thread 隔离，无 checkpointer 时每任务本来就是全新输入），T3 的并行批次也共享同一个
+    图——所以**别为了省 2.2 ms 去复用执行单元**：图被 ``execute`` 闭包持有，复用等于
+    把它的中间件实例变成长命共享物（ADR-0011）。业务层的 ``AgentFactory.plan_exec()``
+    每个请求建一个新实例。
     """
     graph = make_react_agent(
         model,

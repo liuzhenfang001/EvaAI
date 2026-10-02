@@ -1,5 +1,7 @@
 # ReAct 主 Agent 取代 Plan-Exec 成为默认路径
 
+> **2026-10-02 更新**：决策 1 里「`app.state` 里仍然装配」这一句已由 [ADR-0011](0011-per-request-graph-construction.md) 取代——T9 起 Plan-Exec 的图也改为**每请求构建**，`app.state` 上只剩长命物。封存本身（路由保留、测试保留、没有 UI 入口）不变。另：下面「后果」里「`LoopDetectionMiddleware` 的 `_history` 对 Plan-Exec 的坐标仍是无界增长」一条，也随「中间件实例随请求消失」而解除。
+
 T1–T7 一路把 **Plan-Exec 当作主路径**：任何一句「你好」都要先过 planner，再由执行单元
 执行，replanner 复核。这个前提是错的——默认应当是**直答**，需要时才升级为规划执行。
 本 ADR 记录这次降级、新的默认架构，以及实现中实测出来的三个坑。
