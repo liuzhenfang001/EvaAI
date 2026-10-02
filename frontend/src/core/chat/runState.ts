@@ -65,6 +65,15 @@ export interface ChatMessage {
   taskId?: string;
 }
 
+/**
+ * 这一轮走的是哪条路径，由 `run_start` 下发。
+ *
+ * `react` = ReAct 主 Agent 直答（T8 起的默认路径，没有计划）；`plan` = 封存的
+ * Plan-Exec 编排。它决定气泡署名、面板文案与「正在思考」占位，**不能靠有没有
+ * `plan` 事件反推**——回放中途的状态会让那种推断时对时错。
+ */
+export type RunMode = "react" | "plan";
+
 export interface RunState {
   messages: ChatMessage[];
   plan: PlanTaskView[] | null;
@@ -74,6 +83,8 @@ export interface RunState {
   runId: string | null;
   /** 本段对话所属的会话；由 `run_start` 下发（服务端也可能替我们生成）。 */
   threadId: string | null;
+  /** 本轮走的路径；由 `run_start` 下发。 */
+  mode: RunMode | null;
   timeline: TimelineStep[];
 }
 
@@ -99,6 +110,7 @@ export const emptyRunState = (): RunState => ({
   replan: null,
   runId: null,
   threadId: null,
+  mode: null,
   timeline: [],
 });
 
@@ -110,6 +122,17 @@ interface RawRunStart {
   run_id: string;
   thread_id: string;
   request: string;
+  /**
+   * 缺省 `plan` 是**历史回退**而不是语义缺省：T8 之前写下的 journal 行里没有这个
+   * 字段，而那些行确实都是 Plan-Exec 写的。写成 `react` 会让旧会话整段渲染错。
+   */
+  mode?: RunMode;
+}
+
+interface RawRunEnd {
+  status: "completed" | "failed";
+  output?: string | null;
+  error?: string | null;
 }
 
 interface RawPlan {
@@ -167,6 +190,8 @@ export function applyFrame(state: RunState, name: string, data: unknown): RunSta
       return applyReplan(state, data as RawReplan);
     case "summary":
       return applySummary(state, data as RawSummary);
+    case "run_end":
+      return applyRunEnd(state, data as RawRunEnd);
     default:
       // 未知事件名直接忽略：新增事件不该让旧前端崩掉。
       return state;
@@ -221,8 +246,39 @@ function applyRunStart(state: RunState, data: RawRunStart): RunState {
     ...emptyRunState(),
     threadId: data.thread_id,
     runId: data.run_id,
+    mode: data.mode ?? "plan",
     messages: [...state.messages, { role: "user", content: data.request, tools: [] }],
   };
+}
+
+function applyRunEnd(state: RunState, data: RawRunEnd): RunState {
+  const failed = data.status === "failed";
+  return {
+    ...state,
+    messages: failed ? appendRunFailure(state, data.error ?? "未知原因") : state.messages,
+    timeline: pushStep(state.timeline, {
+      taskId: "",
+      kind: "end",
+      text: failed ? `运行失败：${data.error ?? "未知原因"}` : "本轮完成",
+    }),
+  };
+}
+
+/** 把运行级失败写进这一轮的气泡——与 `applyTaskEnd` 对失败的处理对称：
+ *  失败必须出现在对话里，不能只躺在时间线上。 */
+function appendRunFailure(state: RunState, error: string): ChatMessage[] {
+  const note = `[运行失败：${error}]`;
+  const prefix = `${state.runId ?? ""}:`;
+  let index = -1;
+  state.messages.forEach((message, i) => {
+    if (message.role === "assistant" && message.key?.startsWith(prefix)) index = i;
+  });
+  if (index < 0) return state.messages;
+  return state.messages.map((message, i) =>
+    i === index
+      ? { ...message, content: message.content ? `${message.content}\n\n${note}` : note }
+      : message,
+  );
 }
 
 function applyPlan(state: RunState, data: RawPlan): RunState {

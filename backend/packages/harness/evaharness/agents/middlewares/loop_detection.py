@@ -6,6 +6,13 @@
 - 滑动窗口内同一 hash 出现 >= warn_threshold 次 → 注入"别再调工具"警告
   （延迟到下一次模型调用，作为追加的 HumanMessage，避免破坏 tool 配对）；
 - 出现 >= hard_limit 次 → 剥掉 tool_calls，强制产出文本最终回复。
+
+追踪状态按**检查点坐标**分桶（:func:`~evaharness.agents.middlewares.context.thread_bucket`）。
+**桶在每次运行开始时清空**（``before_agent``）——坐标可能跨轮复用（lead agent 就是），
+而「循环」是一次运行内的现象，不是跨轮的。不重置的话，同一个工具在第 3 轮会被误判、
+第 5 轮直接被掐断。
+
+分桶键必须认**两种上下文形状**（dict 与带 ``thread_id`` 的对象），理由见那个帮手模块。
 """
 
 from __future__ import annotations
@@ -20,6 +27,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
+
+from evaharness.agents.middlewares.context import thread_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +99,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self._pending_warnings: dict[str, list[str]] = {}
         self._stop_reason: dict[str, str] = {}
 
-    def _thread_id(self, runtime: Runtime) -> str:
-        context = getattr(runtime, "context", None)
-        if isinstance(context, dict) and context.get("thread_id"):
-            return str(context["thread_id"])
-        return "default"
-
     def consume_stop_reason(self, thread_id: str) -> str | None:
         """取出并返回某线程触发的硬停原因（loop_capped）。"""
         return self._stop_reason.pop(thread_id, None)
@@ -111,7 +114,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         if not tool_calls:
             return None
 
-        thread_id = self._thread_id(runtime)
+        thread_id = thread_bucket(runtime)
         call_hash = _hash_tool_calls(tool_calls)
 
         history = self._history.setdefault(thread_id, [])
@@ -142,7 +145,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
-        warnings = self._pending_warnings.pop(self._thread_id(request.runtime), [])
+        warnings = self._pending_warnings.pop(thread_bucket(request.runtime), [])
         if not warnings:
             return handler(request)
         reminder = HumanMessage(content="\n\n".join(dict.fromkeys(warnings)), name="loop_warning")
@@ -153,11 +156,28 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
-        warnings = self._pending_warnings.pop(self._thread_id(request.runtime), [])
+        warnings = self._pending_warnings.pop(thread_bucket(request.runtime), [])
         if not warnings:
             return await handler(request)
         reminder = HumanMessage(content="\n\n".join(dict.fromkeys(warnings)), name="loop_warning")
         return await handler(request.override(messages=[*request.messages, reminder]))
+
+    def before_agent(self, state: AgentState, runtime: Runtime) -> dict | None:
+        """每次运行开始时清掉本线程的桶。
+
+        **桶是按 thread_id 分的，而 thread_id 可能跨轮复用**——lead agent 的坐标就是
+        会话级的（``{会话}:lead``）。少了这一步，「查一下时间」在第 3 轮就会撞上
+        ``warn_threshold``、第 5 轮直接被剥掉 ``tool_calls`` 强行掐断，用户正常的
+        重复提问会莫名其妙地答不出来。
+
+        语义上这也对：**循环是一次运行内的现象，不是跨轮的**。与
+        ``TerminalResponseMiddleware`` 在 ``before_agent`` 重置重试预算是同一个先例。
+        """
+        self.reset(thread_bucket(runtime))
+        return None
+
+    async def abefore_agent(self, state: AgentState, runtime: Runtime) -> dict | None:
+        return self.before_agent(state, runtime)
 
     def after_model(self, state: AgentState, runtime: Runtime) -> dict | None:
         return self._apply(state, runtime)

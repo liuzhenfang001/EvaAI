@@ -55,3 +55,18 @@ def test_before_agent_resets_budget():
     mw.before_agent(_state(), rt)  # 新 run 重置
     out = mw.after_model(_state(), rt)
     assert out["jump_to"] == "model"
+
+
+def test_lead_context_buckets_by_coordinate_not_the_fallback():
+    """与循环检测同一个回归：带类型的上下文也必须按坐标分桶。
+
+    共用 ``"default"`` 的话，一个会话用掉的重试预算会让另一个会话少一次重试
+    （或反过来多一次），而症状只是「偶尔少补一条兜底文案」。
+    """
+    from evaharness.agents.lead_agent import LeadContext
+
+    mw = TerminalResponseMiddleware()
+    rt = Runtime(context=LeadContext(session_id="s", thread_id="s:lead", run_id="r1"))
+    mw.after_model(_state(), rt)
+
+    assert mw._retried == {"s:lead"}

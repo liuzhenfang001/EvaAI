@@ -12,12 +12,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+import json
+from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 
@@ -31,6 +33,68 @@ class ToolCapableFake(GenericFakeChatModel):
 
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any):  # noqa: ANN201
         return self
+
+
+class StreamToolFake(ToolCapableFake):
+    """流式路径也**携带 tool_calls** 的假模型。
+
+    两个坑，都是实测出来的（见 ADR-0010）：
+
+    1. ``GenericFakeChatModel._stream`` 只搬 ``content``，``tool_calls`` 会被丢掉
+       （它只特判了遗留的 ``additional_kwargs["function_call"]``）。所以
+       :class:`ToolCapableFake` 能驱动纯文本，却**驱动不了工具往返**——工具压根不会被调用，
+       而测试不会失败，只会静默地测到一条没有工具调用的路径。
+    2. ``content=""`` 的工具调用消息在流式下**一个 chunk 都产不出**，直接
+       ``ValueError: No generations found in stream``。所以这里不做按 token 切分，
+       一次调用产出一个整块 chunk（测试关心的是「工具被调用了」，不是逐 token 边界）。
+
+    ``args`` 必须是 JSON 字符串：langgraph 会把同一 index 的 ``args`` 片段拼接后再解析。
+
+    顺带记录每一次调用收到的消息（``calls``），好断言「什么进了主对话、什么没进」。
+    """
+
+    calls: list = []
+
+    def _stream(  # noqa: ANN001, ANN003
+        self,
+        messages: Any,
+        stop: Any = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        self.calls = [*self.calls, list(messages)]
+        message = next(self.messages)
+        if isinstance(message, str):
+            message = AIMessage(content=message)
+        chunk = AIMessageChunk(
+            content=message.content,
+            id=message.id,
+            tool_call_chunks=[
+                {
+                    "name": call["name"],
+                    "args": json.dumps(call.get("args") or {}, ensure_ascii=False),
+                    "id": call["id"],
+                    "index": index,
+                    "type": "tool_call_chunk",
+                }
+                for index, call in enumerate(message.tool_calls or [])
+            ],
+        )
+        yield ChatGenerationChunk(message=chunk, generation_info={})
+
+
+class CallRecordingFake(ToolCapableFake):
+    """把模型**每一次**调用收到的消息都记下来。
+
+    挂 ``_generate`` 而不是 ``_stream``：非流式路径（``ainvoke`` / ``invoke``，子 agent
+    走的就是它）只经过前者。只覆盖 ``_stream`` 的话测试不会报错，只会永远读到空列表。
+    """
+
+    calls: list = []
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN001, ANN003
+        self.calls = [*self.calls, list(messages)]
+        return super()._generate(messages, stop, run_manager, **kwargs)
 
 
 class RecordingFake(ToolCapableFake):

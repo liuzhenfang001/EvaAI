@@ -1,6 +1,6 @@
 # EvaAI
 
-企业级可用标准的**个人 AI 助手**，架构为 **Plan-And-Executor**（顶层编排）+ **ReAct**（执行单元）。
+企业级可用标准的**个人 AI 助手**。顶层是一个 **ReAct 主 Agent**（`lead agent`）——用户直接与它对话，它自己决定调什么工具、要不要派子 agent；**Plan-Exec 编排**仍然保留但已封存（见 [ADR-0010](docs/adr/0010-lead-agent-as-default-path.md)）。
 
 核心是 **harness 工程思想**：框架层（harness）与业务层（app）分离，harness 不关注业务、只为业务提供可扩展性支持。整体层级与框架严格参照本地参考项目 DeerFlow，但针对「个人助手、本地部署」大幅裁剪。
 
@@ -9,7 +9,8 @@
 ```
 backend/
 ├── packages/harness/evaharness/   # 框架层（业务无关，可插拔机制）
-│   ├── agents/plan_exec/          # Plan-Exec 编排（planner / executor / replanner / 并行合流）
+│   ├── agents/lead_agent/         # ★ 主 Agent：ReAct 图 + 事件流 + 子 agent 派发
+│   ├── agents/plan_exec/          # Plan-Exec 编排（封存；路由 /chat/plan/stream）
 │   ├── checkpoint/                # checkpoint 持久化（SQLite）与保留策略
 │   ├── journal/                   # RunJournal + 可插拔 store（内存 / JSONL）
 │   └── agents/                    # ReAct 执行器装配 + 治理中间件
@@ -49,7 +50,9 @@ uv run uvicorn app.gateway.app:app --port 8010
 cd ../frontend && npm install && npm run dev
 ```
 
-浏览器打开 <http://localhost:3010>，发「现在几点？」应看到：右侧浮动面板淡入，出现 planner 拆出的任务卡，卡片状态随执行推进，聊天区流式吐字并显示工具调用标记，下方时间线逐步记录每一步 trace，最后落到汇总。左侧会话栏可开新对话、在历史对话间切换、重命名或删除；**刷新页面或重启后端后，当前会话的整段对话都会重建**（记录落在 `data/journal/<会话>/`）。
+浏览器打开 <http://localhost:3010>，发「现在几点？」应看到：**直接流式吐字**并显示工具调用标记，没有「规划中…」的等待；连问「我叫什么」会发现它记得上一轮说过的名字。左侧会话栏可开新对话、在历史对话间切换、重命名或删除；**刷新页面或重启后端后，当前会话的整段对话都会重建**（记录落在 `data/journal/<会话>/`）。右侧浮动面板（首次有数据时自动淡入、可收起）这次不再显示计划，而是显示工具调用与每一步进展的时间线——直答模式没有计划可展示。
+
+想跑封存的 Plan-Exec 就用它的路由：`POST /chat/plan/stream`，事件流仍是 `run_start` → `plan` → `task_start` → … → `summary`。
 
 也可用 VSCode 调试：`.vscode/launch.json` 提供「后端: uvicorn」「前端: full stack」等配置，F5 直接起。
 
@@ -71,7 +74,7 @@ cd ../frontend && npm install && npm run dev
 
 ## 垂直切片
 
-MVP 剩余工作按端到端打穿的**垂直切片**交付，对应 GitHub Issue #1–#6：
+工作按端到端打穿的**垂直切片**交付：
 
 - [x] **T1**（#1）端到端最小聊天链路：浏览器发消息 → 流式回复 + 调用一个纯函数工具
 - [x] **T2**（#2）Plan-Exec 编排（单任务）：planner 出计划 → ReAct 执行单元逐个执行 → replanner 判定 → 汇总，全程可在计划面板观察
@@ -80,5 +83,6 @@ MVP 剩余工作按端到端打穿的**垂直切片**交付，对应 GitHub Issu
 - [ ] **T5**（#5）中断与恢复
 - [ ] **T6**（#6）四维度验收收口
 - [x] **T7**（#7）会话与对话历史：多会话新建/切换/重命名/删除，整段对话落盘并可在刷新/重启后重建（ADR-0009）
+- [x] **T8**（#8）ReAct 主 Agent 取代 Plan-Exec 成为默认路径：直答 + 多轮记忆 + 会话摘要压缩 + 子 agent 派发；Plan-Exec 退到 `/chat/plan/stream` 封存（ADR-0010）
 
 已完成的水平里程碑：M0 脚手架 + 边界测试 + 配置加载 + 反射加载；M1 模型工厂 + ReAct 执行器（LangChain `create_agent` + 6 个硬核中间件）。

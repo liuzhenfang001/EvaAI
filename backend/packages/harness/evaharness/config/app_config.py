@@ -1,7 +1,9 @@
 """Typed configuration schema (pydantic).
 
-M1 defines the ``models`` section, T2 adds ``checkpoint``, T3 adds ``journal``;
-later milestones extend :class:`AppConfig` with sandbox / memory / tracing sections.
+M1 defines the ``models`` section, T2 adds ``checkpoint``, T3 adds ``journal``,
+T8 adds ``agent``; later milestones extend :class:`AppConfig` with sandbox /
+memory / tracing sections. New sections are always optional with defaults, so
+``config_version`` does not need a bump for an additive change.
 """
 
 from __future__ import annotations
@@ -57,6 +59,33 @@ class JournalConfig(BaseModel):
     dir: str | None = None
 
 
+class SummarizationConfig(BaseModel):
+    """会话摘要压缩：上下文长了就把早先的消息压成一段摘要。
+
+    ``trigger_tokens`` 是**估算**值（langchain 默认的 ``count_tokens_approximately``），
+    不是 provider 报的准确用量，所以取一个离上限有安全距离的数：DeepSeek 上下文 64K，
+    这里默认 48000。``keep_messages`` 是「尾部保留多少条原样不动」。
+
+    ``model`` 是**模型 profile 的名字**（不是实例），缺省 ``None`` 表示复用主模型。
+    压缩要额外花一次 LLM 调用，用便宜的小模型是合理选择。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = True
+    trigger_tokens: int = 48_000
+    keep_messages: int = 20
+    model: str | None = None
+
+
+class AgentConfig(BaseModel):
+    """Agent 层配置（T8 起：主 Agent 是 ReAct，Plan-Exec 封存）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    summarization: SummarizationConfig = SummarizationConfig()
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration (loaded from config.yaml)."""
 
@@ -67,6 +96,7 @@ class AppConfig(BaseModel):
     models: list[ModelConfig]
     checkpoint: CheckpointConfig = CheckpointConfig()
     journal: JournalConfig = JournalConfig()
+    agent: AgentConfig = AgentConfig()
 
     def get_model_config(self, name: str) -> ModelConfig | None:
         """Return the model profile named *name*, or ``None``."""

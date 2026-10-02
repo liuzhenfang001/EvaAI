@@ -23,3 +23,13 @@ journal:
   store: evaharness.journal.stores:JsonlJournalStore   # 也可以是 :MemoryJournalStore（仅测试用）
   dir: ./data/journal                                   # 相对路径按项目根解析
   flush_threshold: 20                                   # 攒够多少条落一次盘（逐 token 落盘会拖慢实时流）
+
+# Agent 层（T8 起默认路径是 ReAct 主 Agent，Plan-Exec 退到 /chat/plan/stream 封存）。
+agent:
+  # 会话摘要压缩：上下文超过阈值就把早先的消息压成一段摘要（见 docs/adr/0010）。
+  # 阈值是**估算**的 token 数（不是 provider 报的用量），所以取一个离上限有安全距离的值。
+  summarization:
+    enabled: true
+    trigger_tokens: 48000   # DeepSeek 上下文 64K，留出安全余量
+    keep_messages: 20       # 尾部这么多条原样保留
+    model: null             # 摘要用哪个模型 profile；null = 复用主模型

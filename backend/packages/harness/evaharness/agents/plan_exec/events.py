@@ -1,7 +1,13 @@
-"""RunEvent：一次 Plan-Exec 运行的对外事件流。
+"""RunEvent：一次运行的对外事件流。
 
-这是编排器的**唯一输出通道**，也是 SSE 层与 RunJournal 共同的输入。事件全部 JSON
-可序列化（不放 LangChain 对象），因此 SSE 映射是一行透传，RunJournal 可以直接落盘。
+这是所有路径（lead agent 与封存的 Plan-Exec）的**唯一输出通道**，也是 SSE 层与
+RunJournal 共同的输入。事件全部 JSON 可序列化（不放 LangChain 对象），因此 SSE 映射
+是一行透传，RunJournal 可以直接落盘。
+
+.. note::
+   模块路径 ``agents/plan_exec/events.py`` 是**遗留**：T8 起 Plan-Exec 不再是默认路径，
+   而这份契约是两条路径共用的。搬到 ``agents/events.py`` 才是正确的位置，但那会牵动
+   十几个 import 与 ``schemas`` 的类型归属，本片按「不扩大范围」留下，欠账记在 ADR-0010。
 
 刻意**没有 ``error`` 变体**：任务级失败走 ``TaskEndEvent(status="failed")``
 （best-effort），致命异常直接向上抛、由 SSE 层兜成 error 帧——避免两条错误通道
@@ -10,7 +16,7 @@
 **``category`` 是给消费者路由用的桶，不是排他分区**（沿用参照项目 DeerFlow 的定义）：
 
 - ``message``：承载**对话内容**——用户请求（``run_start``）、助手正文增量
-  （``messages``）、任务的产出与成败（``task_end``）。
+  （``messages``）、任务的产出与成败（``task_end``）、一轮的收尾（``run_end``）。
 - ``trace``：只讲**编排过程**——``plan`` / ``task_start`` / ``replan`` / ``summary``。
 
 所以「对话投影」= 过滤 ``category == "message"``；而「trace 投影」= **全部事件**
@@ -58,6 +64,13 @@ class RunStartEvent(_MessageEvent):
     thread_id: str
     request: str
     started_at: str
+    mode: Literal["react", "plan"] = "plan"
+    """这一轮走的是哪条路径（T8）。
+
+    缺省 ``"plan"`` 是**历史回退**而不是语义缺省：T7 期间写下的 journal 行里没有这个
+    字段，而那些行确实都是 Plan-Exec 写的。前端靠它决定署名、面板文案与「规划中…」
+    占位，回放也能从 journal 学到同一个值——所以它必须随事件落盘。
+    """
 
 
 class MessagesEvent(_MessageEvent):
@@ -126,6 +139,24 @@ class ReplanEvent(_TraceEvent):
     reason: str = ""
 
 
+class RunEndEvent(_MessageEvent):
+    """一次运行的收尾事件，与 :class:`RunStartEvent` 对称（T8）。
+
+    lead agent 路径**没有** ``task_end``——它不拆任务——所以 message 桶里到它为止就
+    再也没有一个终态事件，而「助手这一轮说完了」正是对话要显示的东西。
+
+    它同时是 **journal 的提交点**：``RunJournal`` 按条目数计的阈值在归并之后很少触发，
+    收尾强制 flush 才能把崩溃窗口限制在单次运行内（原先只有 ``task_end`` 有这个待遇）。
+
+    Plan-Exec 的终态仍是 :class:`SummaryEvent`（载荷是任务级结果），形状不同，不挪用。
+    """
+
+    type: Literal["run_end"] = "run_end"
+    status: Literal["completed", "failed"] = "completed"
+    output: str | None = None
+    error: str | None = None
+
+
 class SummaryEvent(_TraceEvent):
     """运行收尾的确定性汇总（不调 LLM）。
 
@@ -140,7 +171,14 @@ class SummaryEvent(_TraceEvent):
 
 
 RunEvent = Annotated[
-    RunStartEvent | MessagesEvent | PlanEvent | TaskStartEvent | TaskEndEvent | ReplanEvent | SummaryEvent,
+    RunStartEvent
+    | MessagesEvent
+    | PlanEvent
+    | TaskStartEvent
+    | TaskEndEvent
+    | ReplanEvent
+    | SummaryEvent
+    | RunEndEvent,
     Field(discriminator="type"),
 ]
 """编排器产出的事件联合类型。"""
@@ -154,6 +192,7 @@ __all__ = [
     "MessagesEvent",
     "PlanEvent",
     "ReplanEvent",
+    "RunEndEvent",
     "RunEvent",
     "RunEventAdapter",
     "RunStartEvent",

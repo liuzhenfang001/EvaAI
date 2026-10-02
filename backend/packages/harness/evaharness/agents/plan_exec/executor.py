@@ -21,9 +21,10 @@ from typing import Any, Protocol
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
+from evaharness.agents.messages import final_text
 from evaharness.agents.plan_exec.events import MessagesEvent, RunEvent, TaskEndEvent
 from evaharness.agents.plan_exec.schemas import PlanTask, TaskResult
 from evaharness.agents.react import make_react_agent
@@ -76,30 +77,6 @@ def render_task_prompt(task: PlanTask, dependency_results: Sequence[TaskResult])
             else:
                 lines.append("（上游未产出内容）")
     return "\n".join(lines)
-
-
-def final_text(state: Mapping[str, Any] | None) -> str | None:
-    """从图终态里取最后一条有可见文本的 AIMessage。"""
-    if not state:
-        return None
-    messages = state.get("messages") or []
-    for message in reversed(list(messages)):
-        if not isinstance(message, AIMessage):
-            continue
-        text = _message_text(message.content)
-        if text:
-            return text
-    return None
-
-
-def _message_text(content: Any) -> str:
-    """把 AIMessage 的 content（字符串或内容块列表）拍平成纯文本。"""
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts = [block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
-        return "".join(parts).strip()
-    return ""
 
 
 def make_react_executor(

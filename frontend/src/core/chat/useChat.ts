@@ -158,6 +158,7 @@ export function useChat() {
     replan: state.replan,
     runId: state.runId,
     threadId: state.threadId,
+    mode: state.mode,
     timeline: state.timeline,
     threads,
     streaming,

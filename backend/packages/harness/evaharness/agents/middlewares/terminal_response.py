@@ -3,6 +3,10 @@
 简化自 DeerFlow：保留核心契约 —— 工具运行结束后若模型返回空回复，
 自动重试一次（移除空消息 + 跳回 model 节点 + 注入恢复提示）；重试仍空则
 写入可见的兜底文案。每次 run 有且仅有一次重试预算（before_agent 重置）。
+
+预算按**检查点坐标**分桶，桶键取自
+:func:`~evaharness.agents.middlewares.context.thread_bucket`（必须认得 dict 与带
+``thread_id`` 的对象两种上下文形状，理由见那个模块）。
 """
 
 from __future__ import annotations
@@ -20,6 +24,8 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 from langgraph.runtime import Runtime
+
+from evaharness.agents.middlewares.context import thread_bucket
 
 _RECOVERY_PROMPT = (
     "<system_reminder>\n"
@@ -83,12 +89,6 @@ class TerminalResponseMiddleware(AgentMiddleware[AgentState]):
         self._retried: set[str] = set()
         self._pending_recovery: set[str] = set()
 
-    def _thread_id(self, runtime: Runtime) -> str:
-        context = getattr(runtime, "context", None)
-        if isinstance(context, dict) and context.get("thread_id"):
-            return str(context["thread_id"])
-        return "default"
-
     def _apply(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
         messages = list(state.get("messages") or [])
         if not messages or not isinstance(messages[-1], AIMessage):
@@ -99,7 +99,7 @@ class TerminalResponseMiddleware(AgentMiddleware[AgentState]):
         if not _tool_result_in_current_turn(messages):
             return None
 
-        thread_id = self._thread_id(runtime)
+        thread_id = thread_bucket(runtime)
         if thread_id not in self._retried:
             self._retried.add(thread_id)
             self._pending_recovery.add(thread_id)
@@ -117,7 +117,7 @@ class TerminalResponseMiddleware(AgentMiddleware[AgentState]):
         return {"messages": [fallback]}
 
     def _augment_request(self, request: ModelRequest) -> ModelRequest:
-        thread_id = self._thread_id(request.runtime)
+        thread_id = thread_bucket(request.runtime)
         if thread_id not in self._pending_recovery:
             return request
         self._pending_recovery.discard(thread_id)
@@ -129,13 +129,13 @@ class TerminalResponseMiddleware(AgentMiddleware[AgentState]):
         return request.override(messages=[*request.messages, reminder])
 
     def before_agent(self, state: AgentState, runtime: Runtime) -> dict | None:
-        self._retried.discard(self._thread_id(runtime))
-        self._pending_recovery.discard(self._thread_id(runtime))
+        self._retried.discard(thread_bucket(runtime))
+        self._pending_recovery.discard(thread_bucket(runtime))
         return None
 
     async def abefore_agent(self, state: AgentState, runtime: Runtime) -> dict | None:
-        self._retried.discard(self._thread_id(runtime))
-        self._pending_recovery.discard(self._thread_id(runtime))
+        self._retried.discard(thread_bucket(runtime))
+        self._pending_recovery.discard(thread_bucket(runtime))
         return None
 
     @hook_config(can_jump_to=["model"])

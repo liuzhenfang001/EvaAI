@@ -48,6 +48,33 @@ def task_thread_id(thread_id: str, run_id: str, task_id: str) -> str:
     return _SEPARATOR.join((thread_id, run_id, task_id))
 
 
+def lead_thread_id(thread_id: str) -> str:
+    """lead agent（主 Agent）的 checkpoint 坐标：``{会话}:lead``。
+
+    **会话级、且跨运行不变**——这不是随手省字段，而是记忆的全部来源：坐标稳定，
+    checkpointer 才会在下一轮把上一轮的消息一起交给模型；一旦带上 ``run_id``，
+    每轮都是空 thread，历史不会自动装载（T8 之前 Plan-Exec 的执行单元就是这样，
+    因此一个字都记不住）。
+
+    它以 ``{会话}:`` 开头，所以 :func:`delete_session_checkpoints` 的前缀匹配天然
+    覆盖它。顺便也是 ``LoopDetectionMiddleware`` 的分桶键——正因为跨轮复用同一个桶，
+    那个中间件必须按运行重置（见 ``middlewares/loop_detection.py``）。
+    """
+    return _SEPARATOR.join((thread_id, "lead"))
+
+
+def subagent_thread_id(thread_id: str, run_id: str, tool_call_id: str) -> str:
+    """子 agent 的 checkpoint 坐标：``{会话}:{运行}:sub:{工具调用}``。
+
+    子 agent 是**短工而不是对话**，所以坐标带 run——跨轮不累积，与
+    :func:`lead_thread_id` 正相反。
+
+    ``tool_call_id`` 是**天然唯一、可重入、且不需要任何跨运行状态**的调用身份：
+    同一轮里并发派发多个子 agent 不会撞，重放同一次调用也是同一个坐标。
+    """
+    return _SEPARATOR.join((thread_id, run_id, f"sub:{tool_call_id}"))
+
+
 async def delete_session_checkpoints(saver: Any, *, thread_id: str) -> int:
     """删除某个会话的全部任务级 checkpoint，返回删除的 thread 数。
 
@@ -126,7 +153,9 @@ async def prune_checkpoints(saver: Any, *, retention_days: float) -> int:
 __all__ = [
     "checkpoint_timestamp_ms",
     "delete_session_checkpoints",
+    "lead_thread_id",
     "make_sqlite_checkpointer",
     "prune_checkpoints",
+    "subagent_thread_id",
     "task_thread_id",
 ]

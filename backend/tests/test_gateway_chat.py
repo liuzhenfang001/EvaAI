@@ -1,4 +1,8 @@
-"""gateway SSE 流式集成测试：Plan-Exec 全链路（不依赖真实模型/配置）。
+"""Plan-Exec 的事件流 → SSE 帧契约。
+
+T8 之后这条路径**不再是默认**（退到 ``/chat/plan/stream`` 封存），所以这一组断言
+覆盖的是封存路径仍然要守住的契约；默认路径（主 Agent）见 ``test_lead_agent.py``，
+两条路由的接线见 ``test_gateway_routes.py``。
 
 planner 与 replanner 用替身（结构化输出无法用假模型驱动），**执行单元是真的**——
 这样才覆盖到「事件流 → SSE 帧」这条真实的接缝。
@@ -87,6 +91,7 @@ async def test_run_start_frame_carries_the_run_and_thread_ids():
     assert data["run_id"] == "run-abc"
     assert data["thread_id"] == "th-abc"
     assert data["request"] == "现在几点？"
+    assert data["mode"] == "plan", "这条路径必须自报家门为 plan"
 
 
 @pytest.mark.asyncio

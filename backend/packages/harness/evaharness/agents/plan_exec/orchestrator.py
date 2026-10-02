@@ -108,6 +108,9 @@ async def run_plan_exec(
         thread_id=thread_id,
         request=request,
         started_at=datetime.now(UTC).isoformat(),
+        # 显式写出来而不是吃缺省值：缺省 "plan" 是给 T7 旧 journal 的历史回退，
+        # 这里写的是「这条路径是 Plan-Exec」，两者含义不同（见 RunStartEvent.mode）。
+        mode="plan",
     )
 
     plan = await planner(request)

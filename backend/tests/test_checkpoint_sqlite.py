@@ -14,8 +14,10 @@ from langgraph.checkpoint.base.id import uuid6
 from evaharness.checkpoint.sqlite_saver import (
     checkpoint_timestamp_ms,
     delete_session_checkpoints,
+    lead_thread_id,
     make_sqlite_checkpointer,
     prune_checkpoints,
+    subagent_thread_id,
     task_thread_id,
 )
 
@@ -229,3 +231,51 @@ async def test_delete_session_checkpoints_is_a_noop_for_unknown_sessions(tmp_pat
 
         assert await delete_session_checkpoints(saver, thread_id="th-none") == 0
         assert await _threads(saver) == {"th-1:run-1:t1"}
+
+
+# --------------------------------------------------------------------------- #
+# lead / subagent 坐标（T8）
+# --------------------------------------------------------------------------- #
+
+
+def test_lead_thread_id_is_session_scoped_and_stable():
+    """**会话级、且跨运行不变**——这正是记忆的来源。
+
+    坐标一旦带上 run，checkpointer 每轮都会开一个空 thread，历史不会自动装载，
+    「主 Agent 记得上一轮说了什么」就没了。
+    """
+    assert lead_thread_id("th-1") == "th-1:lead"
+    assert lead_thread_id("th-1") == lead_thread_id("th-1")
+
+
+def test_subagent_thread_id_is_run_scoped_and_unique_per_call():
+    """子 agent 是短工不是对话：坐标带 run 且带 tool_call_id，所以它跨轮不累积。"""
+    first = subagent_thread_id("th-1", "run-1", "call-abc")
+    second = subagent_thread_id("th-1", "run-1", "call-def")
+
+    assert first == "th-1:run-1:sub:call-abc"
+    assert first != second
+    assert subagent_thread_id("th-1", "run-1", "call-abc") == first
+
+
+def test_lead_and_task_coordinates_never_collide():
+    """两者都在 ``th-1:`` 之下，但必须是不同的 thread。"""
+    assert lead_thread_id("th-1") != task_thread_id("th-1", "run-1", "t1")
+
+
+@pytest.mark.asyncio
+async def test_delete_session_checkpoints_covers_every_coordinate_kind(tmp_path):
+    """删会话要一次扫干净三种坐标——journal 真删了而 checkpoint 留着，
+    就只能等保留策略（默认 7 天）才扫得到，而且那期间主 Agent 还「记得」一个
+    已经删掉的会话。
+    """
+    async with make_sqlite_checkpointer(tmp_path / "cp.sqlite") as saver:
+        await _write_thread(saver, lead_thread_id("th-1"), _uuid6_at(1_700_000_000_000))
+        await _write_thread(saver, subagent_thread_id("th-1", "run-1", "call-abc"), _uuid6_at(1_700_000_000_000))
+        await _write_thread(saver, task_thread_id("th-1", "run-1", "t1"), _uuid6_at(1_700_000_000_000))
+        await _write_thread(saver, lead_thread_id("th-2"), _uuid6_at(1_700_000_000_000))
+
+        deleted = await delete_session_checkpoints(saver, thread_id="th-1")
+
+        assert deleted == 3
+        assert await _threads(saver) == {"th-2:lead"}

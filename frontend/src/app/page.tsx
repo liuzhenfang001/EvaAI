@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   PlanTaskView,
   ReplanView,
+  RunMode,
   RunSummary,
   TaskStatus,
   ThreadSummary,
@@ -128,6 +129,7 @@ function Timeline({ steps }: { steps: TimelineStep[] }) {
 function TaskPanel({
   open,
   onToggle,
+  mode,
   plan,
   summary,
   replan,
@@ -135,12 +137,19 @@ function TaskPanel({
 }: {
   open: boolean;
   onToggle: () => void;
+  mode: RunMode | null;
   plan: PlanTaskView[] | null;
   summary: RunSummary | null;
   replan: ReplanView | null;
   timeline: TimelineStep[];
 }) {
   const done = plan?.filter((t) => t.status === "done").length ?? 0;
+  // 直答模式没有计划是**正常的**，不是「还没开始规划」——空态文案必须说清楚，
+  // 否则用户会一直等一个永远不会出现的计划。
+  const emptyHint =
+    mode === "react"
+      ? "当前是直答模式，没有计划可展示；工具调用与每一步进展见下方时间线。"
+      : "发一条消息，这里会实时显示 planner 拆出的任务。";
 
   return (
     <>
@@ -164,7 +173,7 @@ function TaskPanel({
           </div>
         </div>
 
-        {!plan && <div className="plan-empty">发一条消息，这里会实时显示 planner 拆出的任务。</div>}
+        {!plan && <div className="plan-empty">{emptyHint}</div>}
 
         <div className="task-list">
           {plan?.map((task) => (
@@ -202,6 +211,7 @@ function TaskPanel({
 export default function Home() {
   const {
     messages,
+    mode,
     plan,
     summary,
     replan,
@@ -221,12 +231,15 @@ export default function Home() {
   const autoShown = useRef(false);
 
   // 只在**首次**有数据时自动弹一次；之后完全由用户按钮控制，不再打扰。
+  // 判据是「有没有数据」而不是「有没有计划」：直答模式永远不会有计划，只认 plan 的话
+  // 面板在最主要的路径上从不自动出现。
+  const hasData = Boolean(plan) || timeline.length > 0;
   useEffect(() => {
-    if (plan && !autoShown.current) {
+    if (hasData && !autoShown.current) {
       autoShown.current = true;
       setPanelOpen(true);
     }
-  }, [plan]);
+  }, [hasData]);
 
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -247,8 +260,14 @@ export default function Home() {
     }
   };
 
-  // planner 用 structured output，不产 token 流；没有这段占位会莫名静默。
-  const planning = streaming && !plan;
+  // 两处静默，各要一句占位：
+  // - Plan-Exec：planner 用 structured output，不产 token 流，规划期一个字都没有；
+  // - 主 Agent：还没有第一个正文 chunk 之前也是空的。
+  // 判据只能看 mode——直答模式**永远**不会有 plan，用 `!plan` 当条件会让占位整轮挂着。
+  const runMode = mode ?? "plan";
+  const awaitingFirstToken = streaming && !messages.some((m) => m.role === "assistant" && m.content);
+  const placeholder = streaming && (runMode === "plan" ? !plan : awaitingFirstToken);
+  const placeholderText = runMode === "react" ? "思考中…" : "规划中…";
 
   return (
     <div className="app">
@@ -269,12 +288,16 @@ export default function Home() {
         </header>
 
         <section className="messages">
-          {messages.length === 0 && !planning && (
+          {messages.length === 0 && !placeholder && (
             <div className="empty">发一条消息开始对话，例如「现在几点？」</div>
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="role">{m.role === "user" ? "你" : m.taskId ? `EvaAI · ${m.taskId}` : "EvaAI"}</div>
+              {/* 泳道后缀只对 Plan-Exec 有意义（`t1`/`t2`）。直答模式的泳道是约定的
+                  `main`，标出来只会让人以为还有别的助手。 */}
+              <div className="role">
+                {m.role === "user" ? "你" : runMode === "plan" && m.taskId ? `EvaAI · ${m.taskId}` : "EvaAI"}
+              </div>
               {(m.content || m.tools.length > 0) && (
                 <div className="bubble">
                   {m.content}
@@ -291,10 +314,10 @@ export default function Home() {
               )}
             </div>
           ))}
-          {planning && (
+          {placeholder && (
             <div className="msg assistant">
               <div className="role">EvaAI</div>
-              <div className="bubble">规划中…</div>
+              <div className="bubble">{placeholderText}</div>
             </div>
           )}
         </section>
@@ -317,6 +340,7 @@ export default function Home() {
       <TaskPanel
         open={panelOpen}
         onToggle={() => setPanelOpen((open) => !open)}
+        mode={mode}
         plan={plan}
         summary={summary}
         replan={replan}

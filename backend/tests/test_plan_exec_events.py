@@ -13,6 +13,7 @@ from evaharness.agents.plan_exec.events import (
     MessagesEvent,
     PlanEvent,
     ReplanEvent,
+    RunEndEvent,
     RunEventAdapter,
     RunStartEvent,
     SummaryEvent,
@@ -53,6 +54,53 @@ def test_run_start_event_roundtrips():
     assert dumped["type"] == "run_start"
     assert dumped["thread_id"] == "th-xyz"
     assert parsed.request == "现在几点？"
+
+
+def test_run_start_mode_defaults_to_plan_for_pre_t8_journals():
+    """``mode`` 的缺省值是**历史回退**，不是语义缺省。
+
+    T7 期间写下的 journal 行里没有这个字段，而那些行确实都是 Plan-Exec 写的，
+    所以解析时必须回退成 ``plan``——否则旧会话会整段渲染错（署名、面板文案、
+    「规划中…」占位都由它决定）。
+    """
+    dumped, parsed = _roundtrip(
+        RunStartEvent(run_id="r", thread_id="t", request="q", started_at="2026-09-29T10:00:00+00:00")
+    )
+    assert dumped["mode"] == "plan"
+    assert parsed.mode == "plan"
+
+
+def test_run_start_mode_carries_the_react_path():
+    _, parsed = _roundtrip(
+        RunStartEvent(run_id="r", thread_id="t", request="q", started_at="2026-09-30T10:00:00+00:00", mode="react")
+    )
+    assert parsed.mode == "react"
+
+
+def test_run_start_rejects_an_unknown_mode():
+    with pytest.raises(ValidationError):
+        RunStartEvent(run_id="r", thread_id="t", request="q", started_at="s", mode="nope")
+
+
+def test_run_end_event_roundtrips():
+    """``run_end`` 是 lead 路径的终态：它没有 ``task_end``，message 桶里必须有个收尾。"""
+    event = RunEndEvent(status="completed", output="现在 18:04")
+    dumped, parsed = _roundtrip(event)
+
+    assert dumped["type"] == "run_end"
+    assert parsed.status == "completed"
+    assert parsed.output == "现在 18:04"
+    assert parsed.error is None
+
+
+def test_run_end_event_carries_failure_detail():
+    event = RunEndEvent(status="failed", error="RuntimeError: boom")
+    dumped, parsed = _roundtrip(event)
+
+    assert dumped["type"] == "run_end"
+    assert parsed.status == "failed"
+    assert parsed.error == "RuntimeError: boom"
+    assert parsed.output is None
 
 
 def test_plan_event_roundtrips():
@@ -132,6 +180,7 @@ def _all_events() -> list:
         TaskEndEvent(task_id="t1", status="done"),
         SummaryEvent(status="completed", results=[]),
         ReplanEvent(should_continue=True, reason=""),
+        RunEndEvent(status="completed", output="好了"),
     ]
 
 
@@ -147,6 +196,7 @@ def test_every_event_exposes_a_type_literal():
         ("run_start", "message"),
         ("messages", "message"),
         ("task_end", "message"),
+        ("run_end", "message"),
         ("plan", "trace"),
         ("task_start", "trace"),
         ("summary", "trace"),

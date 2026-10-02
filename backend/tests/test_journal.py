@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from evaharness.agents.plan_exec.events import MessagesEvent, TaskEndEvent, TaskStartEvent
+from evaharness.agents.plan_exec.events import MessagesEvent, RunEndEvent, TaskEndEvent, TaskStartEvent
 from evaharness.journal.journal import RunJournal, journaled
 from evaharness.journal.stores import MemoryJournalStore
 
@@ -117,6 +117,22 @@ async def test_task_end_forces_a_flush():
     await journal.record(TaskEndEvent(task_id="t1", status="done", output="甲"))
 
     assert [entry.event.type for entry in await store.load(THREAD)] == ["messages", "task_end"]
+
+
+@pytest.mark.asyncio
+async def test_run_end_forces_a_flush():
+    """lead agent 路径的提交点。
+
+    它不拆任务，所以整轮里**一个 ``task_end`` 都不会有**——只认 ``task_end`` 的话，
+    这条路径的崩溃窗口会大到「一整轮问答全丢」。
+    """
+    store = MemoryJournalStore()
+    journal = _journal(store)
+
+    await journal.record(_text("甲"))
+    await journal.record(RunEndEvent(status="completed", output="甲"))
+
+    assert [entry.event.type for entry in await store.load(THREAD)] == ["messages", "run_end"]
 
 
 @pytest.mark.asyncio

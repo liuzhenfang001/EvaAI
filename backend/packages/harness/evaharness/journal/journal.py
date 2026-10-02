@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 
-from evaharness.agents.plan_exec.events import RunEvent, TaskEndEvent
+from evaharness.agents.plan_exec.events import RunEndEvent, RunEvent, TaskEndEvent
 from evaharness.journal.compaction import MessageCompactor
 from evaharness.journal.stores import JournalEntry, JournalStore
 
@@ -31,8 +31,14 @@ DEFAULT_FLUSH_THRESHOLD = 20
 """攒够多少条**归并后**的记录才落一次 store。
 
 注意它数的是归并后的条目，不是事件数：归并让一次运行通常只产出个位数条目，所以
-这个阈值很少被触发，「什么时候落盘」实际上由 :class:`TaskEndEvent` 与收尾的
-``flush()`` 决定（见 :meth:`RunJournal.record`）。
+这个阈值很少被触发，「什么时候落盘」实际上由下面的提交点与收尾的 ``flush()`` 决定。
+"""
+
+_COMMIT_POINTS = (TaskEndEvent, RunEndEvent)
+"""在它们之后**强制** flush 的事件类型。
+
+归并让按条目数计的阈值几乎不再触发，只靠阈值的话崩在中途会丢掉整次运行。这两个是
+天然的提交点：任务做完、一轮说完。Plan-Exec 用前者，lead agent 用后者（它不拆任务）。
 """
 
 
@@ -57,11 +63,10 @@ class RunJournal:
         self._seq = 0
 
     async def record(self, event: RunEvent) -> None:
-        """记一条事件（先归并）；够阈值或任务收尾时落 store。"""
+        """记一条事件（先归并）；够阈值或撞上提交点时落 store。"""
         self._seq += 1
         self._compactor.add(JournalEntry(seq=self._seq, event=event))
-        # 任务结束是天然的提交点：归并让阈值很少触发，只靠阈值的话崩溃窗口会很长。
-        if len(self._compactor) >= self.flush_threshold or isinstance(event, TaskEndEvent):
+        if len(self._compactor) >= self.flush_threshold or isinstance(event, _COMMIT_POINTS):
             await self.flush()
 
     async def flush(self) -> None:
