@@ -7,6 +7,12 @@ dependencies = [
     "evaharness",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
+    # 工具集的直接依赖（T4）。放 app 层而不是 harness：harness 是业务无关的机制层，
+    # 「用哪个搜索 API、怎么把网页抽成正文」是业务决定——这一片框架层的依赖零增长。
+    "httpx>=0.28.0",          # web_fetch 直连 Jina；自己 import 就得自己声明，不靠传递依赖
+    "tavily-python>=0.7.17",  # web_search
+    "readabilipy>=0.3.0",     # 正文抽取（自带 bs4 / html5lib / lxml / regex）
+    "markdownify>=1.2.2",     # HTML → Markdown
 ]
 
 [dependency-groups]

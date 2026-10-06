@@ -86,6 +86,29 @@ class AgentConfig(BaseModel):
     summarization: SummarizationConfig = SummarizationConfig()
 
 
+class ToolConfig(BaseModel):
+    """一个工具的注册项。
+
+    ``use`` 是 ``"module.path:attr"``，指向**两种东西之一**：
+
+    - 一个 ``BaseTool`` **实例**（``@tool`` 装饰过的函数就是）；
+    - 一个**工厂函数**——它吃下面那些额外键作为关键字参数，返回 ``BaseTool``。
+
+    「实例或工厂」这条二选一是为了让 `extra` 有明确归宿：写错的键会让工厂抛
+    ``TypeError``，而不是被静默忽略。这样每个工具的参数都在**构建期**绑进闭包，
+    工具实例因此是自足的——不需要（也不允许有）任何「读当前配置」的进程全局。
+
+    ``name`` 必须与解析出来的工具自身的 ``.name`` 一致，且全表不许重名：前者决定
+    模型看到的名字、后者决定路由落到哪里，两者分歧时症状都是「工具明明在列表里却
+    调不动」。这两种错都在**启动期**直接失败。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    use: str
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration (loaded from config.yaml)."""
 
@@ -97,6 +120,14 @@ class AppConfig(BaseModel):
     checkpoint: CheckpointConfig = CheckpointConfig()
     journal: JournalConfig = JournalConfig()
     agent: AgentConfig = AgentConfig()
+    tools: list[ToolConfig] = []
+    """工具注册表。**缺省是空表，而且空表会被拒绝启动**（见 app 层的 ``build_tools``）。
+
+    刻意不像 :class:`JournalConfig` 那样给一个「缺省即用内置默认集」的兜底：那会让
+    「哪些工具在跑」有两个来源（代码常量 + 配置），而其中一个是隐形的。工具是 agent
+    的能力边界，应该一眼能从配置里读出来——代价是漏配这一段的配置**起不来**，
+    这是有意的（比「服务正常、助手却什么都不会」好查得多）。
+    """
 
     def get_model_config(self, name: str) -> ModelConfig | None:
         """Return the model profile named *name*, or ``None``."""

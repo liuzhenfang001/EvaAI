@@ -33,3 +33,43 @@ agent:
     trigger_tokens: 48000   # DeepSeek 上下文 64K，留出安全余量
     keep_messages: 20       # 尾部这么多条原样保留
     model: null             # 摘要用哪个模型 profile；null = 复用主模型
+
+# 工具集（T4）。每一项是一个工具；`use` 是 "module.path:attr"，指向**两种东西之一**：
+#   - 一个 BaseTool 实例（@tool 装饰过的函数就是）；
+#   - 一个**工厂函数**，它吃下面那些额外键作为关键字参数，返回一个工具。
+# 加一个工具 = 写一个 @tool（或工厂）+ 在下面加一项，不用改任何 Python 框架代码。
+#
+# `name` 必须与工具自己的 .name 一致，且全表不许重名——两者在**启动期**校验，写错就拒绝启动。
+# 这一段**不能是空的**：工具是 agent 的能力边界，所以没有隐藏的默认集。
+#
+# 工具看到的路径是**虚拟路径**，宿主目录是 backend/.evaai/（见 docs/adr/0012）：
+#   /workspace 工作台（相对路径的落点，可写）  /output 交付（可写）
+#   /input     用户上传（只读）                /skills 技能文件（只读）
+tools:
+  - name: get_current_time
+    use: app.tools.builtin:get_current_time
+
+  # 文件沙箱内的读写与检索
+  - name: ls
+    use: app.tools.file_ops:ls
+  - name: read_file
+    use: app.tools.file_ops:read_file
+  - name: write_file
+    use: app.tools.file_ops:write_file
+  - name: str_replace
+    use: app.tools.file_ops:str_replace
+  - name: glob
+    use: app.tools.file_ops:glob
+  - name: grep
+    use: app.tools.file_ops:grep
+
+  # 联网。两个 key 都是可选的：搜索走 Tavily，不填 TAVILY_API_KEY 就用它的无 key 模式
+  # （能用，但有速率上限）；抓取走 Jina Reader，JINA_API_KEY 同样可选。
+  - name: web_search
+    use: app.tools.web:make_web_search
+    max_results: 5          # 这些额外键 = 工厂的关键字参数，在启动期绑进工具
+    timeout: 20
+  - name: web_fetch
+    use: app.tools.web:make_web_fetch
+    timeout: 10
+    use_readability: false  # 打开会走 Node/Readability.js；本机缺它的 node_modules，会触发 npm install

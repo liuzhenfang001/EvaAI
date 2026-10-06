@@ -222,3 +222,6 @@ config.yaml
 
 # EvaAI runtime data (sqlite checkpoints)
 data/
+
+# EvaAI 文件沙箱的运行期数据（input / output / workspace / skills-view，见 docs/adr/0012）
+.evaai/

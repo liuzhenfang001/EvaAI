@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from evaharness.config.app_config import AppConfig, CheckpointConfig, JournalConfig, ModelConfig
+from evaharness.config.app_config import AppConfig, CheckpointConfig, JournalConfig, ModelConfig, ToolConfig
 
 
 def test_model_config_defaults():
@@ -87,3 +87,38 @@ def test_app_config_journal_section_is_parsed():
     )
     assert cfg.journal.store.endswith("MemoryJournalStore")
     assert cfg.journal.flush_threshold == 5
+
+
+# --------------------------------------------------------------------------- #
+# 工具注册表（T4）
+# --------------------------------------------------------------------------- #
+
+
+def test_tool_config_keeps_extra_keys_for_the_factory():
+    """额外键是**要给工厂的**，所以不能 forbid——写错的键由工厂的签名去拒。"""
+    tool = ToolConfig(name="web_search", use="app.tools.web:make_web_search", max_results=3, timeout=20)
+    assert tool.use == "app.tools.web:make_web_search"
+    assert tool.model_extra == {"max_results": 3, "timeout": 20}
+
+
+def test_tool_config_requires_a_use_path():
+    with pytest.raises(ValidationError):
+        ToolConfig(name="x")  # type: ignore[call-arg]
+
+
+def test_app_config_tools_default_to_empty():
+    """缺省是空表，而空表会在启动期被拒绝——这里只钉住类型，不钉住「可用」。
+
+    刻意不像 journal 那样给内置默认集：那会让「哪些工具在跑」有两个来源，其中一个隐形。
+    """
+    cfg = AppConfig(config_version=1, models=[ModelConfig(name="a", model="m-a")])
+    assert cfg.tools == []
+
+
+def test_app_config_tools_section_is_parsed():
+    cfg = AppConfig(
+        config_version=1,
+        models=[ModelConfig(name="a", model="m-a")],
+        tools=[{"name": "get_current_time", "use": "app.tools.builtin:get_current_time"}],
+    )
+    assert cfg.tools[0].name == "get_current_time"

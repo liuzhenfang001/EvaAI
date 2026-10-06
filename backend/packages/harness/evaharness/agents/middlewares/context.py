@@ -1,23 +1,29 @@
-"""从运行上下文里取「这一轮属于哪个桶」。
+"""从运行上下文里取「这一轮属于哪里」——两种上下文形状只在这里认一次。
 
-中间件要按运行分桶（循环检测的历史、兜底重试的预算），桶键就是**检查点坐标**。
-而运行的上下文有两种形状，两种都得认：
+运行的上下文有两种形状：
 
-- **dict**：Plan-Exec 的任务执行单元传 ``{"thread_id": ...}``（早期形状）；
+- **dict**：Plan-Exec 的任务执行单元传 ``{"thread_id": <坐标>}``（早期形状）；
 - **对象**：lead agent 与子 agent 传 :class:`~evaharness.agents.lead_agent.LeadContext`
   ——它们要 ``session_id`` / ``run_id`` 供 ``task`` 工具派发，所以用带类型的上下文。
 
-只认其中一种的后果是**静默的**：取不到就落进 ``"default"`` 兜底桶，于是所有会话、
-所有子 agent 共用一本账——两个并发会话互相累加，而子 agent 的 ``before_agent``
-还会顺手把主 Agent 正在累积的历史清掉。
+两个消费者：
 
-放在这里而不是各中间件里各写一份：原先两处各有一份**一模一样的**实现，改一处忘一处
-就成了「一个中间件按坐标分桶、另一个按 default 分桶」这种最难查的不一致。
+- 中间件按**检查点坐标**分桶（循环检测的历史、兜底重试的预算）→ :func:`thread_bucket`；
+- 文件工具按**会话**决定目录 → :func:`session_id`。这两者不是一回事，
+  见 :func:`session_id` 的说明。
+
+只认其中一种的后果是**静默的**：分桶取不到就落进 ``"default"``，于是所有会话共用一本账
+——两个并发会话互相累加，而子 agent 的 ``before_agent`` 还会顺手把主 Agent 正在累积的
+历史清掉（T8 实测过）。放在这里而不是各处各写一份：原先两处各有一份**一模一样的**
+实现，改一处忘一处就成了「一个中间件按坐标分桶、另一个按 default 分桶」这种最难查的
+不一致。
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
+from typing import Any
 
 from langgraph.runtime import Runtime
 
@@ -26,6 +32,14 @@ FALLBACK_BUCKET = "default"
 
 它意味着「所有取不到坐标的运行共用一本账」，所以**只在真的没有上下文时**才该出现
 （例如不带 context 直接跑图的单元测试）。正常路径上每个 run 都有自己的坐标。
+"""
+
+SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+"""会话 id 的形状。
+
+与 ``journal.stores`` 校验 thread_id 用的是同一条规则，理由也一样：**它会当路径段用**
+（journal 目录名、文件沙箱的会话目录名）。这里显式重写一遍而不是 import 那个私有正则，
+是因为两个模块之间没有依赖关系，为一个正则牵一条 import 不划算；规则本身简单到不会漂。
 """
 
 
@@ -38,4 +52,35 @@ def thread_bucket(runtime: Runtime) -> str:
     return str(value) if value else FALLBACK_BUCKET
 
 
-__all__ = ["FALLBACK_BUCKET", "thread_bucket"]
+def session_id(runtime: Runtime | Any) -> str:
+    """取这一轮所属的**会话** id（``th-1``），而不是检查点坐标（``th-1:lead``）。
+
+    两者必须分清：坐标是「哪张图的状态」，会话是「用户眼里的一段对话」。文件沙箱按后者
+    分目录——按坐标分的话，同一个会话的主 Agent 与子 agent 会各写一个目录。
+
+    取法分两种形状：
+
+    - 对象：直接读 ``session_id`` 字段（权威，不去切它的 ``thread_id``）；
+    - dict（Plan-Exec 的执行单元）：坐标按契约**一定**以 ``{会话}:`` 开头，取第一段。
+      这条切法复用的是一个既有契约而不是猜——``delete_session_checkpoints`` 的前缀扫描
+      依赖同一个事实。可靠的前提是会话 id 不可能含 ``:``（见 :data:`SAFE_SESSION_ID`）。
+
+    **取不到就抛**，不像 :data:`FALLBACK_BUCKET` 那样兜底：分桶兜错只是账本混在一起，
+    路径兜错会把两个会话的文件写进同一个目录，而且不可逆。
+    """
+    context = getattr(runtime, "context", None)
+    if context is None:
+        raise ValueError("运行上下文缺失，无法确定会话 id")
+
+    if isinstance(context, Mapping):
+        coordinate = context.get("thread_id")
+        value = str(coordinate).split(":", 1)[0] if coordinate else None
+    else:
+        value = getattr(context, "session_id", None)
+
+    if not value or not SAFE_SESSION_ID.match(str(value)):
+        raise ValueError(f"无法从运行上下文确定会话 id（拿到 {context!r}）")
+    return str(value)
+
+
+__all__ = ["FALLBACK_BUCKET", "SAFE_SESSION_ID", "session_id", "thread_bucket"]

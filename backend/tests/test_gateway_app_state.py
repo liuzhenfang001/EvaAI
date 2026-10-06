@@ -1,4 +1,4 @@
-"""lifespan 的形状：只把**长命物**挂到 ``app.state``（T9）。
+"""lifespan 的形状：只把**长命物**挂到 ``app.state``（T9），并且工具在启动期就建好（T4）。
 
 此前没有任何测试跑 lifespan，所以「``app.state`` 只留长命物」这条完全没有护栏——
 而它正是 T9 的一半内容。这里用 ``SimpleNamespace`` 冒充 app（lifespan 只碰 ``app.state``），
@@ -21,6 +21,18 @@ from app.gateway.app import lifespan
 GHOSTS = ("lead_agent", "subagent", "planner", "executor", "replanner", "model")
 """T9 之前挂在 ``app.state`` 上的东西。它们不该回来。"""
 
+# 最小的工具注册表：只留一个不需要任何密钥的纯函数工具，避免测试依赖 .env。
+_ONE_TOOL = [{"name": "get_current_time", "use": "app.tools.builtin:get_current_time"}]
+
+
+def _config(**overrides: object) -> dict:
+    return {
+        "config_version": 1,
+        "models": [{"name": "fake", "model": "fake"}],
+        "tools": _ONE_TOOL,
+        **overrides,
+    }
+
 
 @pytest.mark.asyncio
 async def test_lifespan_attaches_only_long_lived_state(monkeypatch):
@@ -38,10 +50,7 @@ async def test_lifespan_attaches_only_long_lived_state(monkeypatch):
         return ToolCapableFake(messages=itertools.cycle([AIMessage(content="好的。")]))
 
     monkeypatch.setattr("app.gateway.app.load_env_file", lambda _path: None)
-    monkeypatch.setattr(
-        "app.gateway.app.load_config",
-        lambda _path: {"config_version": 1, "models": [{"name": "fake", "model": "fake"}]},
-    )
+    monkeypatch.setattr("app.gateway.app.load_config", lambda _path: _config())
     monkeypatch.setattr("app.gateway.app.make_sqlite_checkpointer", fake_saver)
     monkeypatch.setattr("app.gateway.app._prune_checkpoints", no_prune)
     monkeypatch.setattr("app.gateway.app.make_journal_store", lambda _config: object())
@@ -78,15 +87,29 @@ async def test_a_broken_assembly_refuses_to_start(monkeypatch):
         raise RuntimeError("模型 profile 的 use 指向了不存在的类")
 
     monkeypatch.setattr("app.gateway.app.load_env_file", lambda _path: None)
-    monkeypatch.setattr(
-        "app.gateway.app.load_config",
-        lambda _path: {"config_version": 1, "models": [{"name": "fake", "model": "fake"}]},
-    )
+    monkeypatch.setattr("app.gateway.app.load_config", lambda _path: _config())
     monkeypatch.setattr("app.gateway.app.make_sqlite_checkpointer", fake_saver)
     monkeypatch.setattr("app.gateway.app._prune_checkpoints", no_prune)
     monkeypatch.setattr("app.gateway.app.make_journal_store", lambda _config: object())
     monkeypatch.setattr("app.gateway.agents.create_chat_model", broken_model)
 
     with pytest.raises(RuntimeError, match="不存在的类"):
+        async with lifespan(SimpleNamespace(state=SimpleNamespace())):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_a_broken_tool_entry_refuses_to_start(monkeypatch):
+    """工具注册项写错也要**拒绝启动**——这是 T4 把「建图期抓不到重名」那条盲区补上的地方。
+
+    如果拖到请求期才发现，失败会藏在一条 SSE 流的中间，比启动崩溃难查一个量级。
+    """
+    monkeypatch.setattr("app.gateway.app.load_env_file", lambda _path: None)
+    monkeypatch.setattr(
+        "app.gateway.app.load_config",
+        lambda _path: _config(tools=[{"name": "nope", "use": "app.tools.no_such_module:tool"}]),
+    )
+
+    with pytest.raises(Exception, match="no_such_module"):
         async with lifespan(SimpleNamespace(state=SimpleNamespace())):
             pass

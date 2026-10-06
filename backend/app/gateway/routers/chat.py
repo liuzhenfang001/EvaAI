@@ -27,6 +27,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.gateway.sse import sse_consumer
+from app.tools.sandbox import ensure_session_dirs
 from evaharness.agents.lead_agent import run_lead_agent
 from evaharness.agents.plan_exec import run_plan_exec
 from evaharness.agents.plan_exec.events import RunEvent
@@ -60,6 +61,9 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     """
     state = request.app.state
     thread_id = _resolve_thread_id(body)
+    # 会话一诞生就有它的文件空间：用户能在对话前把文件放进 /input，而「有没有文件空间」
+    # 不取决于模型想没想起来调工具。必须在建图与开跑之前。
+    ensure_session_dirs(thread_id)
     return _stream(
         request,
         run_lead_agent(
@@ -81,6 +85,7 @@ async def plan_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     """
     state = request.app.state
     thread_id = _resolve_thread_id(body)
+    ensure_session_dirs(thread_id)
     roles = state.agent_factory.plan_exec()
     return _stream(
         request,

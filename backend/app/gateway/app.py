@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.gateway.agents import AgentFactory
 from app.gateway.routers import chat, threads
-from app.tools.builtin import get_current_time
+from app.tools.registry import build_tools
 from evaharness.checkpoint.sqlite_saver import make_sqlite_checkpointer, prune_checkpoints
 from evaharness.config.app_config import AppConfig, JournalConfig
 from evaharness.config.loader import load_config, load_env_file
@@ -26,13 +26,6 @@ from evaharness.journal.factory import make_journal_store
 
 # backend/app/gateway/app.py -> 项目根（config.yaml / .env 所在目录）
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
-BUSINESS_TOOLS = [get_current_time]
-"""业务工具的**唯一**定义处。
-
-lead agent 与子 agent 各自拿一份：主 Agent 多一个 ``task`` 工具，子 agent 只有业务工具
-（这是防递归的结构保证，见 ``make_subagent_graph``）。
-"""
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +57,10 @@ async def lifespan(app: FastAPI):
     # 下一片「每请求参数从哪来」要从这里长出去（请求体 / 按会话持久化 / 全局 + 覆盖）。
     app.state.app_config = app_config
 
+    # 工具从配置里来（注册项写错、重名、name 不匹配、工厂参数写错都在这里炸）。必须在
+    # smoke build 之前——smoke build 正是要拿这份列表去试装配。
+    business_tools = build_tools(app_config)
+
     # AsyncSqliteSaver 需要活跃的事件循环，所以只能在这里构造；由 ExitStack 持有到关机。
     # 它也是**唯一**先天不可能每请求建的建图输入（ADR-0007）。
     async with AsyncExitStack() as stack:
@@ -78,18 +75,19 @@ async def lifespan(app: FastAPI):
         app.state.journal_store = make_journal_store(journal_config)
 
         # 建图的唯一入口。它只持有参数、不持有图：每个请求调 lead() / plan_exec() 现建。
-        app.state.agent_factory = AgentFactory(app_config, BUSINESS_TOOLS, checkpointer=saver)
+        app.state.agent_factory = AgentFactory(app_config, business_tools, checkpointer=saver)
 
         # 启动期 smoke build：装配一遍再丢掉，把「启动期就该发现」的错误挡在服务起来之前
         # ——模型 profile 的 use 指向不存在的类、中间件链里塞了非中间件对象、工具列表里塞了
         # 字符串、api key / base_url 缺失。失败就**拒绝启动**，不降级成 warning。
         #
         # **它不是正确性证明。** 建图期抓不到的至少两类（实测）：(1) 工具重名——
-        # create_agent 静默接受；(2) state_schema / context_schema 传错——同样不报错，
-        # 换错要等 task 工具派发那一刻才炸。它抓的是「装配连线断了」，不是「语义接错了」。
+        # create_agent 静默接受（这条已由 registry.build_tools 在**更早**的地方拦掉，见 ADR-0012）；
+        # (2) state_schema / context_schema 传错——同样不报错，换错要等 task 工具派发那一刻才炸。
+        # 它抓的是「装配连线断了」，不是「语义接错了」。
         #
         # checkpointer=None 是有意的：这一步只验装配，不该和 saver 的生命周期绑在一起。
-        smoke = AgentFactory(app_config, BUSINESS_TOOLS, checkpointer=None)
+        smoke = AgentFactory(app_config, business_tools, checkpointer=None)
         smoke.lead()
         smoke.plan_exec()
 

@@ -29,6 +29,13 @@ from evaharness.journal.stores import MemoryJournalStore
 THREAD = "th-1"
 
 
+@pytest.fixture(autouse=True)
+def _sandbox_root(tmp_path, monkeypatch):
+    """路由现在会建会话的文件空间——把它指到 ``tmp_path``，别往真的 ``backend/.evaai`` 里写。"""
+    monkeypatch.setattr("app.tools.sandbox.SANDBOX_ROOT", tmp_path)
+    return tmp_path
+
+
 def _parse(frame: str):
     event = None
     data = None
@@ -204,6 +211,37 @@ async def test_a_generated_thread_id_comes_back_in_run_start():
 # --------------------------------------------------------------------------- #
 # 每请求建图（T9）
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_the_first_message_creates_the_session_file_space(_sandbox_root):
+    """会话一诞生就有它的文件空间——用户要能在对话前把文件放进 /input。
+
+    这条也顺带钉住「不依赖模型去调工具」：这次运行里一个文件工具都没被调用。
+    """
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        await _post(client, "/chat/stream", "你好")
+
+    for name in ("input", "output", "workspace"):
+        assert (_sandbox_root / "user" / THREAD / name).is_dir(), name
+
+
+@pytest.mark.asyncio
+async def test_the_plan_route_creates_it_too(_sandbox_root):
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        await _post(client, "/chat/plan/stream", "你好")
+
+    assert (_sandbox_root / "user" / THREAD / "workspace").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_an_illegal_thread_id_never_creates_anything(_sandbox_root):
+    """400 必须发生在建目录**之前**——否则一个畸形 id 也能在磁盘上留痕。"""
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        resp = await client.post("/chat/stream", json={"content": "你好", "thread_id": "坏.id"})
+
+    assert resp.status_code == 400
+    assert not (_sandbox_root / "user").exists()
 
 
 @pytest.mark.asyncio
