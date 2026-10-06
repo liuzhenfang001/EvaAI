@@ -225,3 +225,6 @@ data/
 
 # EvaAI 文件沙箱的运行期数据（input / output / workspace / skills-view，见 docs/adr/0012）
 .evaai/
+
+# 编辑器配置是每个人各自的调试偏好，不进版本控制
+.vscode/
