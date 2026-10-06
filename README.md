@@ -59,9 +59,6 @@ cd ../frontend && npm install && npm run dev
 
 想跑封存的 Plan-Exec 就用它的路由：`POST /chat/plan/stream`，事件流仍是 `run_start` → `plan` → `task_start` → … → `summary`。
 
-调试也可以走 VSCode：`.vscode/launch.json` 里有「后端: uvicorn」「前端: full stack」等配置，F5 直接起。**`.vscode/` 不进版本控制**（各人的调试偏好不同），所以新克隆的仓库里需要自己建一份。
-
-
 ## 开发约定
 
 - **TDD**：harness 层强制红-绿-重构（先写契约测试，再实现）。
