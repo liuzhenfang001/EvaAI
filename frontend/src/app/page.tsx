@@ -2,8 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  ChatMessage,
+  finalText,
+  hasOutput,
   PlanTaskView,
+  processRounds,
   ReplanView,
+  Round,
   RunMode,
   RunSummary,
   TaskStatus,
@@ -12,6 +17,13 @@ import {
   TimelineStep,
   useChat,
 } from "@/core/chat/useChat";
+
+/**
+ * 右侧任务编排面板暂时下线：折叠式对话已经承载了「过程可见性」，而它是绝对定位的浮动
+ * 覆盖层，窄屏会直接压住消息。回放时间线要回来，所以组件与样式原样保留，**只由这一个
+ * 开关控制**——别再散落条件判断。
+ */
+const SHOW_TASK_PANEL = false;
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
   pending: "待执行",
@@ -205,6 +217,106 @@ function TaskPanel({
 }
 
 // --------------------------------------------------------------------------- #
+// 助手气泡：多轮过程折叠 + 最终回复
+// --------------------------------------------------------------------------- #
+
+/** 一轮的收起摘要：优先说调了什么，没有工具就说「思考」。 */
+function summarizeRound(round: Round): string {
+  const names = round.toolCalls.map((call) => call.name || "工具");
+  return names.length === 0 ? "思考" : `调用 ${names.join("、")}`;
+}
+
+function RoundBlock({
+  round,
+  index,
+  open,
+  onToggle,
+}: {
+  round: Round;
+  index: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className={`round ${open ? "open" : "closed"}`}>
+      {/* 整行都是按钮：折叠的命中区域够大，键盘与读屏也用得上。 */}
+      <button className="round-head" type="button" onClick={onToggle} aria-expanded={open}>
+        <span className="round-caret">{open ? "▾" : "▸"}</span>
+        <span className="round-label">第 {index + 1} 步</span>
+        <span className="round-summary">{summarizeRound(round)}</span>
+      </button>
+      {open && (
+        <div className="round-body">
+          {round.text && <div>{round.text}</div>}
+          {/* 展开时把这一轮调了什么、带什么参数都摊开——收起时只留摘要行里的名字。 */}
+          <ul className="round-tools">
+            {round.toolCalls.map((call) => (
+              <li key={call.index} className={`round-tool ${call.status}`}>
+                <span className="round-tool-name">{call.name || "工具"}</span>
+                <span className="round-tool-args">{call.args || "{}"}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProcessBlock({ rounds, live }: { rounds: Round[]; live: boolean }) {
+  // 折叠是纯 UI 偏好，所以放组件本地 state 而不是 reducer：reducer 是「事件 → 状态」的纯
+  // 投影、实时与回放共用，把「我点开过哪一轮」塞进去会污染回放。键是轮序号——轮次只增
+  // 不改，它在气泡的生命周期内稳定。
+  const [overrides, setOverrides] = useState<Record<number, boolean>>({});
+  const lastIndex = rounds.length - 1;
+
+  return (
+    <div className={`process ${live ? "live" : ""}`}>
+      {rounds.map((round, index) => {
+        // 默认规则：只有「正在打字的最后一轮」展开，历史轮全收起。用户点过就听用户的。
+        const open = overrides[index] ?? (live && index === lastIndex);
+        return (
+          <RoundBlock
+            key={index}
+            round={round}
+            index={index}
+            open={open}
+            onToggle={() => setOverrides((prev) => ({ ...prev, [index]: !open }))}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * 助手气泡 = 可折叠的多轮过程 + 最终回复。
+ *
+ * `live`（「这一轮还在打字」）在这里一次算清：**一旦最终回复有了字，过程就整体收起**——
+ * 模型开始说终稿，过程就该让位，否则「边查边答」两截内容会同时铺开。
+ */
+function AssistantBubble({
+  message,
+  streaming,
+  current,
+}: {
+  message: ChatMessage;
+  streaming: boolean;
+  current: boolean;
+}) {
+  const rounds = processRounds(message);
+  const answer = finalText(message);
+
+  return (
+    <div className="bubble">
+      {rounds.length > 0 && <ProcessBlock rounds={rounds} live={streaming && current && !answer} />}
+      {answer && <div className="final">{answer}</div>}
+      {message.note && <div className="note">⚠️ {message.note}</div>}
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------- #
 // 页面
 // --------------------------------------------------------------------------- #
 
@@ -218,6 +330,7 @@ export default function Home() {
     timeline,
     threads,
     threadId,
+    runId,
     streaming,
     error,
     send,
@@ -235,11 +348,42 @@ export default function Home() {
   // 面板在最主要的路径上从不自动出现。
   const hasData = Boolean(plan) || timeline.length > 0;
   useEffect(() => {
+    if (!SHOW_TASK_PANEL) return; // 面板下线时整段短路，不留会 setState 的幽灵副作用
     if (hasData && !autoShown.current) {
       autoShown.current = true;
       setPanelOpen(true);
     }
   }, [hasData]);
+
+  // 粘底滚动：折叠与实时打字会让内容在视口下方长出来。`stick` 默认贴底，用户往上翻就
+  // 松手——自动滚动最招人烦的失败模式就是把人拽回去。
+  const listRef = useRef<HTMLElement | null>(null);
+  const stick = useRef(true);
+
+  const onListScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    // 40px 的宽容度：否则惯性滚动的那一瞬就会被误判成「用户在上翻」。
+    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
+
+  /** 滚轮落在右侧**任意位置**都要能滚对话。头部与输入框不是 `.messages` 的祖先，浏览器
+   *  不会替我们转发；而指针已经在列表里时不能再插一手，否则会和浏览器自己的滚动叠加。 */
+  const onChatWheel = (event: React.WheelEvent<HTMLElement>) => {
+    const list = listRef.current;
+    if (!list || list.contains(event.target as Node)) return;
+    // deltaMode 1 = 按「行」计（部分鼠标/系统的默认），换算成像素，否则一格只滚几像素。
+    list.scrollTop += event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+  };
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [messages, streaming]);
+
+  /** 这个气泡属于**本轮**运行吗——回看历史时不该把旧气泡也判成「正在打字」。 */
+  const isCurrentRun = (message: ChatMessage) =>
+    Boolean(runId) && Boolean(message.key?.startsWith(`${runId}:`));
 
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -265,7 +409,9 @@ export default function Home() {
   // - 主 Agent：还没有第一个正文 chunk 之前也是空的。
   // 判据只能看 mode——直答模式**永远**不会有 plan，用 `!plan` 当条件会让占位整轮挂着。
   const runMode = mode ?? "plan";
-  const awaitingFirstToken = streaming && !messages.some((m) => m.role === "assistant" && m.content);
+  // 判据必须是 `hasOutput` 而不是「有没有正文」：助手气泡不再有 content 字段（回复是从
+  // 轮次推导的），沿用旧判据会**恒真**，占位符会整轮挂着。
+  const awaitingFirstToken = streaming && !messages.some((m) => m.role === "assistant" && hasOutput(m));
   const placeholder = streaming && (runMode === "plan" ? !plan : awaitingFirstToken);
   const placeholderText = runMode === "react" ? "思考中…" : "规划中…";
 
@@ -281,36 +427,31 @@ export default function Home() {
         onRemove={onRemove}
       />
 
-      <main className="chat">
+      <main className="chat" onWheel={onChatWheel}>
         <header className="chat-header">
           <h1>EvaAI</h1>
           <span className="subtitle">企业级个人 AI 助手</span>
         </header>
 
-        <section className="messages">
+        <section className="messages" ref={listRef} onScroll={onListScroll}>
           {messages.length === 0 && !placeholder && (
             <div className="empty">发一条消息开始对话，例如「现在几点？」</div>
           )}
           {messages.map((m, i) => (
-            <div key={i} className={`msg ${m.role}`}>
+            /* key 用气泡身份而不是数组下标：openThread 会整体替换 messages 数组，下标复用
+               会把 A 对话的「第 2 轮展开」状态串到 B 对话上（折叠状态挂在组件本地）。 */
+            <div key={m.key ?? `idx-${i}`} className={`msg ${m.role}`}>
               {/* 泳道后缀只对 Plan-Exec 有意义（`t1`/`t2`）。直答模式的泳道是约定的
                   `main`，标出来只会让人以为还有别的助手。 */}
               <div className="role">
                 {m.role === "user" ? "你" : runMode === "plan" && m.taskId ? `EvaAI · ${m.taskId}` : "EvaAI"}
               </div>
-              {(m.content || m.tools.length > 0) && (
-                <div className="bubble">
-                  {m.content}
-                  {m.tools.length > 0 && (
-                    <div className="tools">
-                      {m.tools.map((t, j) => (
-                        <span key={j} className="tool">
-                          🔧 {t.label}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
+              {m.role === "user" ? (
+                <div className="bubble">{m.text}</div>
+              ) : (
+                (hasOutput(m) || streaming) && (
+                  <AssistantBubble message={m} streaming={streaming} current={isCurrentRun(m)} />
+                )
               )}
             </div>
           ))}
@@ -337,15 +478,17 @@ export default function Home() {
         </form>
       </main>
 
-      <TaskPanel
-        open={panelOpen}
-        onToggle={() => setPanelOpen((open) => !open)}
-        mode={mode}
-        plan={plan}
-        summary={summary}
-        replan={replan}
-        timeline={timeline ?? EMPTY_STEP}
-      />
+      {SHOW_TASK_PANEL && (
+        <TaskPanel
+          open={panelOpen}
+          onToggle={() => setPanelOpen((open) => !open)}
+          mode={mode}
+          plan={plan}
+          summary={summary}
+          replan={replan}
+          timeline={timeline ?? EMPTY_STEP}
+        />
+      )}
     </div>
   );
 }
