@@ -92,6 +92,15 @@ tools:
 - **外网访问**：本机 `gh` 与 `npm install` 需走本地代理 `127.0.0.1:7890`。
 - **端口**：后端 8010、前端 3010——8001 / 3000 留给本机的参照项目 DeerFlow。前端访问后端的地址只写在 [frontend/src/core/api/config.ts](frontend/src/core/api/config.ts) 一处，要换地址就在 `frontend/.env.local` 里设 `NEXT_PUBLIC_API_URL`（Next.js 只从前端目录读环境文件，仓库根的 `.env` 是给后端用的）。
 
+## 四维度验收（T6）
+
+「可运行 / 可测试 / 可观测 / 可扩展」四条收口，各自这样验：
+
+- **可运行**：新机器按上方「快速开始」从零走一遍——`uv sync` → 复制 `config.example.yaml` / `.env.example` → `uv run pytest` → uvicorn → `npm install && npm run dev`。除了这两份模板，没有其它需要手动准备的东西。
+- **可测试**：`uv run pytest` 内置覆盖率门槛（`--cov=evaharness --cov-fail-under=80`）——harness 层（框架层）覆盖率低于 80% 会直接红；当前 95%。要看缺哪几行，单跑 `uv run pytest --cov-report=term-missing`。
+- **可观测**：每次运行（默认 `/chat/stream` 与封存的 `/chat/plan/stream`）都经 `journaled` 把 `run_start → … → run_end` 的完整事件序列落进 RunJournal（`data/journal/<会话>/`），刷新/重启后按会话回放。
+- **可扩展**：加一个工具 = 写一个 `@tool`（或工厂）+ 在 `config.yaml` 的 `tools:` 加一项，不改任何框架代码——见上方「工具集」。
+
 ## 文档
 
 - [CONTEXT.md](CONTEXT.md) —— 项目词汇表（术语与用词约定）。
@@ -105,8 +114,8 @@ tools:
 - [x] **T2**（#2）Plan-Exec 编排（单任务）：planner 出计划 → ReAct 执行单元逐个执行 → replanner 判定 → 汇总，全程可在计划面板观察
 - [x] **T3**（#4）subagent 并行 + 运行时间线：无依赖任务按批并行派发（ADR-0008），RunJournal 落盘并支持按 run_id 回放
 - [x] **T4**（#3）工具集：文件读写与检索（六个工具，跑在虚拟路径的沙箱里）+ web_search/web_fetch + 配置驱动的工具注册表——加一个工具只加文件与配置，不改框架（ADR-0012）
-- [ ] **T5**（#5）中断与恢复
-- [ ] **T6**（#6）四维度验收收口
+- [x] **T5**（#5）中断与恢复
+- [x] **T6**（#6）四维度验收收口
 - [x] **T7**（#7）会话与对话历史：多会话新建/切换/重命名/删除，整段对话落盘并可在刷新/重启后重建（ADR-0009）
 - [x] **T8**（#8）ReAct 主 Agent 取代 Plan-Exec 成为默认路径：直答 + 多轮记忆 + 会话摘要压缩 + 子 agent 派发；Plan-Exec 退到 `/chat/plan/stream` 封存（ADR-0010）
 - [x] **T9**（#9）agent 每请求构建：消除单例中间件的并发洞，并把「每请求配置」的门打开（ADR-0011）
