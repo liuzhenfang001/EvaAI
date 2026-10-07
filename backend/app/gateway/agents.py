@@ -33,6 +33,7 @@ from langchain.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 
 from app.prompts import EXECUTOR_PROMPT, PLANNER_PROMPT, REPLANNER_PROMPT, SUBAGENT_PROMPT, SYSTEM_PROMPT
+from app.tools.present_files import PRESENT_FILES_NAME
 from evaharness.agents.lead_agent import (
     build_lead_middlewares,
     make_lead_agent,
@@ -54,6 +55,19 @@ __all__ = ["AgentFactory", "PlanRoles"]
 
 ModelFactory = Callable[[str | None], BaseChatModel]
 """模型构造接缝：吃 profile 名（``None`` = 主 profile），返回模型实例。"""
+
+
+def _subagent_tools(tools: Sequence[Any]) -> list[Any]:
+    """子 agent 的工具集：**剔除** ``present_files``。
+
+    子 agent 用 ``ainvoke`` 跑，没有 custom 流模式，于是它那张图的 ``runtime.stream_writer``
+    是个 no-op——工具在里面 emit 的东西**石沉大海**：不抛异常、不报错，只是卡片永远不出现。
+    这种「静默失效」比报错难查一个量级，所以在这里**结构性地**剔掉，而不是在工具里加一句
+    运行期判断（那种判断本身也可能写错，而且会把「为什么不行」散到两个地方）。
+
+    语义上也对：交付物由主 Agent 统一交给用户。子 agent 只把「文件写到哪了」回报给它。
+    """
+    return [tool for tool in tools if getattr(tool, "name", None) != PRESENT_FILES_NAME]
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +132,7 @@ class AgentFactory:
         model = self._model_factory(None)
         subagent = make_subagent_graph(
             model,
-            self.tools,
+            _subagent_tools(self.tools),
             system_prompt=SUBAGENT_PROMPT,
             checkpointer=self.checkpointer,
         )

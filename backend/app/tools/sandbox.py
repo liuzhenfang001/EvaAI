@@ -159,6 +159,25 @@ class Sandbox:
         self._root = self._root.resolve()
         self._ensure_session_dirs()
 
+    @classmethod
+    def exists(cls, session_id: str, *, root: Path | None = None) -> bool:
+        """这个会话的文件空间建过没有——**不产生任何副作用**。
+
+        下载路由靠它挡掉「不存在的会话」：直接构造 :class:`Sandbox` 会顺手把三个目录建出来
+        （见 ``__init__`` 的说明），而一次 404 的请求不该在磁盘上留下痕迹。
+
+        判据是「**任意**一个挂载目录存在」而不是「全都存在」：三个目录是
+        :meth:`_ensure_session_dirs` 一起建的，实际不会半有半无；真出现半有半无时，
+        「任一存在就算存在」的失败模式只是多建两个空目录，而「全都在才算」会对着一个
+        完好无损的 ``/output`` 回 404 —— 后者是更难查的错。
+
+        宿主布局的知识继续只留在本模块：调用方不必知道 ``user/{会话}/output`` 这个形状。
+        """
+        if not _SAFE_SESSION_ID.match(str(session_id or "")):
+            return False
+        base = (Path(root) if root is not None else SANDBOX_ROOT).resolve()
+        return any(mount.host_root(base, str(session_id)).exists() for mount in SESSION_MOUNTS)
+
     def _ensure_session_dirs(self) -> None:
         """把会话的三个目录建出来（幂等，与 journal store 的按需建目录同一做法）。"""
         for mount in SESSION_MOUNTS:

@@ -87,6 +87,22 @@ export interface Round {
   closed: boolean;
 }
 
+/** 模型交付给用户的文件（T11，来自 `files_presented` 事件）。 */
+export interface PresentedFileView {
+  /**
+   * 虚拟路径（`/output/报告.md`）。**拼下载链接的唯一依据**。
+   *
+   * 它**永远是虚拟口径**——宿主路径不会出现在事件里（后端在沙箱那一层就换掉了），
+   * 所以这里也不必做任何防护。
+   */
+  path: string;
+  /** 文件名（含扩展名）。后端单独给了一份，前端不再自己切路径。 */
+  name: string;
+  size: number;
+  /** 认不出来时为 `null`——不编造一个类型出来让图标画错。 */
+  mime: string | null;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   /**
@@ -101,6 +117,13 @@ export interface ChatMessage {
   rounds: Round[];
   /** 运行级 / 任务级的失败备注。不属于任何一轮，单独挂在气泡底部。 */
   note?: string;
+  /**
+   * 这个气泡交付给用户的文件（T11）。
+   *
+   * 挂在**气泡**上而不是运行级状态：卡片属于「这一轮产出了什么」，该和产生它的那段回复
+   * 待在一起；而 run 级状态在下一轮 `run_start` 就被整体重置了，挂那儿下一轮就没了。
+   */
+  files?: PresentedFileView[];
   /**
    * 气泡的**唯一身份**：`runId:taskId`。
    *
@@ -127,7 +150,7 @@ export function processRounds(message: ChatMessage): Round[] {
 
 /** 这个气泡有没有任何可显示的东西——占位符判据与空气泡守卫都用它。 */
 export function hasOutput(message: ChatMessage): boolean {
-  return message.rounds.length > 0 || Boolean(message.note);
+  return message.rounds.length > 0 || Boolean(message.note) || Boolean(message.files?.length);
 }
 
 /**
@@ -227,6 +250,18 @@ interface RawSummary {
   skipped?: string[];
 }
 
+interface RawFilesPresented {
+  task_id: string;
+  files?: unknown;
+}
+
+interface RawPresentedFile {
+  path?: unknown;
+  name?: unknown;
+  size?: unknown;
+  mime?: unknown;
+}
+
 interface RawToolCall {
   id?: unknown;
   name?: unknown;
@@ -270,6 +305,8 @@ export function applyFrame(state: RunState, name: string, data: unknown): RunSta
       return applyReplan(state, data as RawReplan);
     case "summary":
       return applySummary(state, data as RawSummary);
+    case "files_presented":
+      return applyFilesPresented(state, data as RawFilesPresented);
     case "run_end":
       return applyRunEnd(state, data as RawRunEnd);
     default:
@@ -612,6 +649,45 @@ function applyMessages(state: RunState, data: unknown): RunState {
   }
 
   return { ...state, messages, timeline };
+}
+
+function applyFilesPresented(state: RunState, data: RawFilesPresented): RunState {
+  const files = readPresentedFiles(data.files);
+  // 后端已经保证非空（空载荷根本不会成事件），这里只是不给自己造一个空数组出来。
+  if (files.length === 0) {
+    return state;
+  }
+  // **累加**而不是覆盖：一次运行里模型可以调两次 `present_files`（先交一份、再补一份），
+  // 两张卡片都该在。同一份文件被交两次就出两张——后端没有去重，前端也不擅自猜哪个是重复。
+  return {
+    ...state,
+    messages: patchBubble(state.messages, bubbleKey(state.runId, data.task_id), data.task_id, (m) => ({
+      ...m,
+      files: [...(m.files ?? []), ...files],
+    })),
+  };
+}
+
+function readPresentedFiles(raw: unknown): PresentedFileView[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.flatMap((entry) => {
+    const file = (entry ?? {}) as RawPresentedFile;
+    const path = str(file.path);
+    // 没有路径的条目直接丢：卡片上唯一能点的东西就是它，留着只会是一张死卡片。
+    if (!path) {
+      return [];
+    }
+    return [
+      {
+        path,
+        name: str(file.name) || path.split("/").pop() || path,
+        size: typeof file.size === "number" ? file.size : 0,
+        mime: typeof file.mime === "string" ? file.mime : null,
+      },
+    ];
+  });
 }
 
 function applyTaskEnd(state: RunState, data: RawTaskEnd): RunState {

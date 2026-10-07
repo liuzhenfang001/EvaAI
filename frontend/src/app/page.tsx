@@ -6,6 +6,7 @@ import {
   finalText,
   hasOutput,
   PlanTaskView,
+  PresentedFileView,
   processRounds,
   ReplanView,
   Round,
@@ -17,6 +18,8 @@ import {
   TimelineStep,
   useChat,
 } from "@/core/chat/useChat";
+import FileCards from "./FileCards";
+import FilePreview from "./FilePreview";
 import Markdown from "./Markdown";
 
 /**
@@ -300,10 +303,14 @@ function AssistantBubble({
   message,
   streaming,
   current,
+  threadId,
+  onPreview,
 }: {
   message: ChatMessage;
   streaming: boolean;
   current: boolean;
+  threadId: string | null;
+  onPreview: (file: PresentedFileView) => void;
 }) {
   const rounds = processRounds(message);
   const answer = finalText(message);
@@ -312,6 +319,9 @@ function AssistantBubble({
     <div className="bubble">
       {rounds.length > 0 && <ProcessBlock rounds={rounds} live={streaming && current && !answer} />}
       {answer && <Markdown text={answer} className="final" />}
+      {message.files?.length ? (
+        <FileCards files={message.files} threadId={threadId} onPreview={onPreview} />
+      ) : null}
       {message.note && <div className="note">⚠️ {message.note}</div>}
     </div>
   );
@@ -344,6 +354,18 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [panelOpen, setPanelOpen] = useState(false);
   const autoShown = useRef(false);
+  // 正在预览哪个交付文件。**放组件本地 state 而不是 reducer**——与轮次折叠同一个理由
+  // （见 ProcessBlock）：reducer 是「事件 → 状态」的纯投影、实时与回放共用，把「我在看
+  // 哪个文件」塞进去会污染回放。也因此它不持久化，刷新后面板关掉。
+  //
+  // **文件与会话 id 存成一对**：面板开着时用户切会话的话，只存文件就会拿新会话的 id 去
+  // 请求旧会话的文件（路径一模一样，只是前缀错了，症状是莫名其妙的 404）。
+  const [preview, setPreview] = useState<{ threadId: string; file: PresentedFileView } | null>(null);
+
+  useEffect(() => {
+    // 换会话就把预览关掉：否则左栏已经换成另一段对话，右栏还在展示上一段的文件。
+    setPreview(null);
+  }, [threadId]);
 
   // 只在**首次**有数据时自动弹一次；之后完全由用户按钮控制，不再打扰。
   // 判据是「有没有数据」而不是「有没有计划」：直答模式永远不会有计划，只认 plan 的话
@@ -394,6 +416,13 @@ export default function Home() {
     setInput("");
   };
 
+  const openPreview = (file: PresentedFileView) => {
+    // 卡片没有 threadId 就渲染不出来，所以这里理论上一定拿得到；类型上它是可空的。
+    if (threadId) {
+      setPreview({ threadId, file });
+    }
+  };
+
   const onRename = (thread: ThreadSummary) => {
     const title = window.prompt("给这段对话起个名字", thread.title);
     if (title && title.trim()) void rename(thread.thread_id, title.trim());
@@ -418,7 +447,9 @@ export default function Home() {
   const placeholderText = runMode === "react" ? "思考中…" : "规划中…";
 
   return (
-    <div className="app">
+    // `with-preview` 只在预览打开时加上：第三列不能常驻——`gap` 对空轨道照样生效，
+    // 关着面板时会白白吃掉一段间距。
+    <div className={`app ${preview ? "with-preview" : ""}`}>
       <SessionList
         threads={threads}
         currentId={threadId}
@@ -452,7 +483,13 @@ export default function Home() {
                 <div className="bubble">{m.text}</div>
               ) : (
                 (hasOutput(m) || streaming) && (
-                  <AssistantBubble message={m} streaming={streaming} current={isCurrentRun(m)} />
+                  <AssistantBubble
+                    message={m}
+                    streaming={streaming}
+                    current={isCurrentRun(m)}
+                    threadId={threadId}
+                    onPreview={openPreview}
+                  />
                 )
               )}
             </div>
@@ -486,6 +523,16 @@ export default function Home() {
           )}
         </form>
       </main>
+
+      {/* key 按文件走：换一个文件就重挂载，加载态与图片失败态因此自动归零，不必逐处 reset。 */}
+      {preview && (
+        <FilePreview
+          key={`${preview.threadId}:${preview.file.path}`}
+          file={preview.file}
+          threadId={preview.threadId}
+          onClose={() => setPreview(null)}
+        />
+      )}
 
       {SHOW_TASK_PANEL && (
         <TaskPanel

@@ -325,3 +325,84 @@ describe("取消备注", () => {
     expect(message.note).toBe("已取消");
   });
 });
+
+// --------------------------------------------------------------------------- #
+// 交付文件（T11）
+// --------------------------------------------------------------------------- #
+
+describe("交付文件", () => {
+  const FILES = [
+    { path: "/output/quicksort.go", name: "quicksort.go", size: 2048, mime: null },
+    { path: "/output/报告.md", name: "报告.md", size: 512, mime: "text/markdown" },
+  ];
+  const PRESENTED: Frame = ["files_presented", { type: "files_presented", task_id: "main", files: FILES }];
+
+  it("挂到对应的助手气泡上，字段原样保留", () => {
+    // 这份文件列表的形状就是后端 FilesPresentedEvent 的在线形状（含 task_id 泳道）。
+    const message = assistant(project([START, text("写好了"), PRESENTED]));
+
+    expect(message.files).toEqual(FILES);
+  });
+
+  it("两次交付是累加，不是后一次覆盖前一次", () => {
+    // 模型可以先交一份、再补一份；覆盖的话第一份卡片会凭空消失。
+    const more = [
+      { path: "/output/chart.png", name: "chart.png", size: 9000, mime: "image/png" },
+    ];
+    const message = assistant(
+      project([
+        START,
+        text("先交这些"),
+        PRESENTED,
+        ["files_presented", { type: "files_presented", task_id: "main", files: more }],
+      ]),
+    );
+
+    expect(message.files?.map((f) => f.path)).toEqual([
+      "/output/quicksort.go",
+      "/output/报告.md",
+      "/output/chart.png",
+    ]);
+  });
+
+  it("回放出来的与实时看到的完全一致", () => {
+    // `toFrame` 对未知事件是原样透传，所以回放**不需要**为这个事件另写一条路径。
+    // 这条就是钉住那个「不需要」。
+    const live = assistant(project([START, text("写好了"), PRESENTED]));
+    const replayed = assistant(
+      replay([
+        { type: "run_start", run_id: "r0", thread_id: "t0", request: "现在几点？", mode: "react" },
+        { type: "files_presented", task_id: "main", files: FILES },
+      ]),
+    );
+
+    expect(replayed.files).toEqual(live.files);
+  });
+
+  it("没有路径的条目被丢掉——卡片点不动就没意义", () => {
+    const message = assistant(
+      project([
+        START,
+        text("写好了"),
+        ["files_presented", { type: "files_presented", task_id: "main", files: [{ name: "无路径.md" }, ...FILES] }],
+      ]),
+    );
+
+    expect(message.files?.map((f) => f.path)).toEqual(["/output/quicksort.go", "/output/报告.md"]);
+  });
+
+  it("空列表不改变状态：不造空气泡、也不落一个空数组", () => {
+    const before = project([START, text("写好了")]);
+    const after = project([START, text("写好了"), ["files_presented", { type: "files_presented", task_id: "main", files: [] }]]);
+
+    expect(after).toEqual(before);
+  });
+
+  it("只有文件也算「有内容」", () => {
+    // hasOutput 是空气泡守卫：有卡片却判成空，气泡会被整块丢掉。
+    const message = assistant(project([START, PRESENTED]));
+
+    expect(message.rounds).toHaveLength(0);
+    expect(hasOutput(message)).toBe(true);
+  });
+});

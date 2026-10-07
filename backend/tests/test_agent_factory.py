@@ -68,6 +68,26 @@ def test_each_lead_build_is_a_new_graph():
     assert factory.lead() is not factory.lead()
 
 
+def test_the_subagent_never_gets_present_files():
+    """子 agent 的工具集里必须**没有** ``present_files``。
+
+    子 agent 用 ``ainvoke`` 跑、没有 custom 流模式，它那张图的 ``runtime.stream_writer`` 是
+    no-op——工具在里面 emit 的东西石沉大海，**不抛异常、不报错**，只是卡片永远不出现。
+    这种静默失效只能在结构上防（见 ``agents._subagent_tools``）。
+    """
+    from langchain_core.tools import tool
+
+    from app.gateway.agents import _subagent_tools
+    from app.tools.present_files import present_files
+
+    @tool("other")
+    def other(text: str) -> str:
+        """一个普通业务工具。"""
+        return text
+
+    assert _subagent_tools([present_files, other]) == [other]
+
+
 def test_each_plan_exec_build_is_a_new_roles_bundle():
     """三件套**必须一起换**：执行单元在装配期把图闭包进了 ``execute``。"""
     factory = _factory()

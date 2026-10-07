@@ -13,8 +13,12 @@ body {
 }
 
 /* 两栏：会话列表 + 聊天区。**铺满视口**而不是居中留白——会话栏贴左边，聊天区拿剩下的
-   全部宽度，再由下面那条规则把对话内容收成居中的一列。任务编排面板是浮在上面的覆盖层，
-   不占网格列；position: relative 是那个覆盖层的定位参照。 */
+   全部宽度，再由下面那条规则把对话内容收成居中的一列。
+
+   两个侧面板的落位**刻意不同**：任务编排面板是浮在上面的覆盖层、不占网格列（它是「顺带
+   看一眼」的辅助信息，盖住一点无所谓）；交付文件预览**占第三列**（`with-preview`，见下），
+   它是要对着读的内容，盖住对话就没法一边看代码一边对照回答了。position: relative 是那个
+   浮层的定位参照。 */
 .app {
   position: relative;
   display: grid;
@@ -25,6 +29,12 @@ body {
   gap: 16px;
   height: 100vh;
   padding: 16px;
+}
+
+/* 预览打开时才加第三列。**不能常驻**：`gap` 对空轨道照样生效，关着面板时会白白吃掉
+   一段间距——而「面板关着」是绝大多数时候的状态。 */
+.app.with-preview {
+  grid-template-columns: 220px minmax(0, 1fr) auto;
 }
 
 .chat {
@@ -426,6 +436,147 @@ body {
   margin-top: 8px;
   font-size: 12px;
   color: #ff6b6b;
+}
+
+/* ---- 交付文件卡片（T11）---- */
+
+/* 交付物是**独立的一块**，跟在最终回复下面：与其说它是正文的一部分，不如说它是这次
+   运行的产出——所以给它自己的边框与底色，和正文分得开。 */
+.files {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  background: #171a20;
+}
+
+.file-icon {
+  flex: none;
+  font-size: 16px;
+}
+
+/* 「看内容」这一块本身是个按钮（点它开预览），所以要把浏览器给按钮的默认外观全撤掉——
+   不然它和右边的下载链接长得不像同一个整体。 */
+.file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  /* 没有 min-width: 0，里面那行的省略号不会生效——flex 子项的默认最小宽度是内容宽度，
+     长文件名的卡片会被撑破而不是截断。 */
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-info:hover .file-name {
+  color: #9fb4ff;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.file-meta {
+  color: #5b6068;
+  font-size: 11px;
+}
+
+.file-download {
+  flex: none;
+  padding: 4px 12px;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  color: #9fb4ff;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.file-download:hover {
+  border-color: #9fb4ff;
+  background: #1c1f26;
+}
+
+/* ---- 交付文件预览（T11，`/app` 的第三列）---- */
+
+/* 真列而不是浮层：打开时对话收窄，可以一边看代码一边对照回答。 */
+.file-preview {
+  display: flex;
+  flex-direction: column;
+  width: clamp(320px, 34vw, 560px);
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #2a2f3a;
+  border-radius: 12px;
+  background: #171a20;
+  overflow: hidden;
+}
+
+.preview-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.preview-meta {
+  flex: none;
+  margin-top: 2px;
+  color: #5b6068;
+  font-size: 11px;
+}
+
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  margin-top: 10px;
+  overflow: auto;
+}
+
+/* 图片按容器缩放，但**不放大**——把一张 32×32 的图标拉满整屏没有意义。 */
+.preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  margin-inline: auto;
+  border-radius: 6px;
+}
+
+.preview-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  color: #8a8f98;
+  font-size: 13px;
+}
+
+.preview-banner {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border: 1px solid #2a2f3a;
+  border-radius: 8px;
+  background: #1c1f26;
+  color: #d29922;
+  font-size: 12px;
 }
 
 .error {
@@ -977,5 +1128,13 @@ body {
     bottom: 16px;
     transform: none;
     padding: 6px 18px;
+  }
+
+  /* 窄屏没有地方再让出一列了（这时 `.app` 已经从网格退成纵向 flex），预览也跟着退成
+     浮层——与任务面板同一个思路。 */
+  .file-preview {
+    position: absolute;
+    inset: 16px;
+    width: auto;
   }
 }

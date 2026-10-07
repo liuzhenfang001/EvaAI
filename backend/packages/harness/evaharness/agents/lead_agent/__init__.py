@@ -14,6 +14,7 @@ from evaharness.agents.lead_agent.agent import (
     make_lead_agent,
     make_subagent_graph,
 )
+from evaharness.agents.lead_agent.custom_events import PRESENT_FILES_KIND, present_files_payload
 from evaharness.agents.lead_agent.runner import RunCancellation, run_lead_agent
 from evaharness.agents.lead_agent.subagent import make_task_tool
 
@@ -21,6 +22,7 @@ __all__ = [
     "DEFAULT_LEAD_PROMPT",
     "DEFAULT_SUBAGENT_PROMPT",
     "LEAD_LANE",
+    "PRESENT_FILES_KIND",
     "TASK_TOOL_NAME",
     "LeadContext",
     "RunCancellation",
@@ -28,5 +30,6 @@ __all__ = [
     "make_lead_agent",
     "make_subagent_graph",
     "make_task_tool",
+    "present_files_payload",
     "run_lead_agent",
 ]

@@ -129,6 +129,7 @@ def test_the_real_config_lists_tools_that_all_resolve(monkeypatch):
     assert names[0] == "get_current_time"
     assert {"ls", "read_file", "write_file", "str_replace", "glob", "grep"} <= set(names)
     assert {"web_search", "web_fetch"} <= set(names)
+    assert "present_files" in names, "模板少了它，用户装上就没有文件卡片"
 
 
 # --------------------------------------------------------------------------- #
@@ -183,6 +184,53 @@ async def test_a_registered_tool_is_reachable_through_the_real_graph(monkeypatch
     assert events[-1].status == "completed"
     written = tmp_path / "user" / "th-1" / "workspace" / "note.txt"
     assert written.read_text(encoding="utf-8") == "hi"
+
+
+@pytest.mark.asyncio
+async def test_presenting_a_file_reaches_the_event_stream(monkeypatch, tmp_path):
+    """**T11 的端到端**：写文件 → ``present_files`` → 事件流里出现 ``files_presented``。
+
+    整条链路都是真的（``create_agent`` / ToolNode / custom 流 / 沙箱），只有模型是假的。
+    它一条同时覆盖两件事：工具注册得进去、以及 custom 通道真的通到 runner。
+    """
+    monkeypatch.setattr("app.tools.sandbox.SANDBOX_ROOT", tmp_path)
+
+    model = StreamToolFake(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"path": "/output/quicksort.go", "content": "package main"},
+                            "id": "c1",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "present_files", "args": {"paths": ["/output/quicksort.go"]}, "id": "c2"}],
+                ),
+                AIMessage(content="写好了"),
+            ]
+        )
+    )
+    tools = build_tools(
+        _config(
+            _entry("write_file", "app.tools.file_ops:write_file"),
+            _entry("present_files", "app.tools.present_files:present_files"),
+        )
+    )
+    agent = make_lead_agent(model, tools, checkpointer=InMemorySaver())
+
+    events = await collect(run_lead_agent("写个快速排序并交给我", agent=agent, thread_id="th-1"))
+
+    presented = [e for e in events if e.type == "files_presented"]
+    assert len(presented) == 1
+    assert presented[0].files[0].path == "/output/quicksort.go"
+    assert presented[0].files[0].size == len("package main".encode())
+    assert events[-1].status == "completed"
 
 
 def test_every_registered_tool_is_a_base_tool():

@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.gateway.agents import AgentFactory
 from app.gateway.run_registry import RunRegistry
-from app.gateway.routers import chat, threads
+from app.gateway.routers import chat, files, threads
 from app.tools.registry import build_tools
 from evaharness.checkpoint.sqlite_saver import make_sqlite_checkpointer, prune_checkpoints
 from evaharness.config.app_config import AppConfig, JournalConfig
@@ -123,6 +123,8 @@ def create_app() -> FastAPI:
     )
     app.include_router(chat.router)
     app.include_router(threads.router)
+    # 文件卡片点「下载」走的就是它（GET /threads/{会话}/files/{路径}）。
+    app.include_router(files.router)
     return app
 
 

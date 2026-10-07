@@ -92,6 +92,12 @@ _Avoid_: tmp, 临时目录, sandbox
 注入面交给它。
 _Avoid_: 权限, ACL
 
+**交付文件（presented file）**：
+模型通过 `present_files` 工具**显式**交给用户的成品。它必须是 `/output` 下的文件，是一条
+`files_presented` 事件，前端渲染成可下载的卡片、也随 RunJournal 落盘（刷新后卡片仍在）。
+「显式」是要点：`/workspace` 里的东西**不算**交付文件，写得再多也不会出现在用户面前。
+_Avoid_: artifact, 产出物, 附件, 文件引用（DeerFlow 管这个叫 artifact，那是它的 state channel 概念）
+
 ### 交付
 
 **垂直切片（tracer bullet）**：

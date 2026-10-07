@@ -10,8 +10,10 @@ import pytest
 from pydantic import ValidationError
 
 from evaharness.agents.plan_exec.events import (
+    FilesPresentedEvent,
     MessagesEvent,
     PlanEvent,
+    PresentedFile,
     ReplanEvent,
     RunEndEvent,
     RunEventAdapter,
@@ -146,6 +148,30 @@ def test_summary_event_roundtrips_with_structured_payload():
     assert parsed.failed == ["t2"]
 
 
+def test_files_presented_event_roundtrips():
+    """``files_presented`` 是「这一轮产出了什么」——卡片要能落盘并原样回放。"""
+    event = FilesPresentedEvent(
+        task_id="main",
+        files=[
+            PresentedFile(path="/output/report.md", name="report.md", size=1234, mime="text/markdown"),
+            PresentedFile(path="/output/chart.png", name="chart.png", size=99),
+        ],
+    )
+    dumped, parsed = _roundtrip(event)
+
+    assert dumped["type"] == "files_presented"
+    assert dumped["task_id"] == "main"
+    assert [f["path"] for f in dumped["files"]] == ["/output/report.md", "/output/chart.png"]
+    assert parsed.files[0].size == 1234
+    assert parsed.files[1].mime is None, "mime 认不出来时留空，不编一个出来"
+
+
+def test_a_presented_file_rejects_a_missing_path():
+    """``path`` 是前端拼下载链接的**唯一**依据，缺了就等于一张点不动的卡片。"""
+    with pytest.raises(ValidationError):
+        PresentedFile(name="a.md", size=1)  # type: ignore[call-arg]
+
+
 def test_replan_event_roundtrips():
     event = ReplanEvent(should_continue=False, reason="用户请求已满足")
     dumped, parsed = _roundtrip(event)
@@ -180,6 +206,7 @@ def _all_events() -> list:
         TaskEndEvent(task_id="t1", status="done"),
         SummaryEvent(status="completed", results=[]),
         ReplanEvent(should_continue=True, reason=""),
+        FilesPresentedEvent(task_id="main", files=[PresentedFile(path="/output/a.md", name="a.md", size=1)]),
         RunEndEvent(status="completed", output="好了"),
     ]
 
@@ -196,6 +223,7 @@ def test_every_event_exposes_a_type_literal():
         ("run_start", "message"),
         ("messages", "message"),
         ("task_end", "message"),
+        ("files_presented", "message"),
         ("run_end", "message"),
         ("plan", "trace"),
         ("task_start", "trace"),

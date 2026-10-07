@@ -63,6 +63,11 @@ tools:
   - name: grep
     use: app.tools.file_ops:grep
 
+  # 把 /output 下的成品交给用户：前端会显示成可下载的文件卡片，并随 journal 落盘（刷新后
+  # 卡片仍在）。只放行 /output——/workspace 是工作台，它的内容不会出现在用户面前。
+  - name: present_files
+    use: app.tools.present_files:present_files
+
   # 联网。两个 key 都是可选的：搜索走 Tavily，不填 TAVILY_API_KEY 就用它的无 key 模式
   # （能用，但有速率上限）；抓取走 Jina Reader，JINA_API_KEY 同样可选。
   - name: web_search

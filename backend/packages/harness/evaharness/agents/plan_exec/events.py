@@ -16,7 +16,8 @@ RunJournal 共同的输入。事件全部 JSON 可序列化（不放 LangChain �
 **``category`` 是给消费者路由用的桶，不是排他分区**（沿用参照项目 DeerFlow 的定义）：
 
 - ``message``：承载**对话内容**——用户请求（``run_start``）、助手正文增量
-  （``messages``）、任务的产出与成败（``task_end``）、一轮的收尾（``run_end``）。
+  （``messages``）、任务的产出与成败（``task_end``）、展示给用户的文件
+  （``files_presented``）、一轮的收尾（``run_end``）。
 - ``trace``：只讲**编排过程**——``plan`` / ``task_start`` / ``replan`` / ``summary``。
 
 所以「对话投影」= 过滤 ``category == "message"``；而「trace 投影」= **全部事件**
@@ -139,6 +140,40 @@ class ReplanEvent(_TraceEvent):
     reason: str = ""
 
 
+class PresentedFile(BaseModel):
+    """一个交付给用户的文件。
+
+    ``path`` 是**虚拟路径口径**（``/output/report.md``）——宿主路径永远不进事件、不进模型
+    上下文、更不出前端（见 ``app/tools/sandbox.py`` 的模块说明）。``name`` 单独给一份而不是
+    让前端再切一次路径：展示用的东西不该由消费者各自解析一遍。
+    """
+
+    path: str
+    name: str
+    size: int
+    mime: str | None = None
+
+
+class FilesPresentedEvent(_MessageEvent):
+    """模型把 ``/output`` 下的成品显式呈现给用户（T11）。
+
+    归 ``message`` 桶：它是「这一轮产出了什么」的对话内容，卡片要出现在聊天区——语义与
+    :class:`TaskEndEvent` 一致（产出与成败归 message），**不是**编排过程。
+
+    ``task_id`` 由 runner 填（见 :func:`~evaharness.agents.lead_agent.runner.run_lead_agent`），
+    不由产出这个事件的工具填：泳道是 runner 的职责（``messages`` 事件也是它硬编码
+    ``LEAD_LANE``），而且 ``events`` 这个模块 import ``LEAD_LANE`` 会与
+    :mod:`~evaharness.agents.lead_agent.agent` 循环依赖。
+
+    **刻意不带 ``download_url``**：URL 的形状是网关层的路由细节，harness 的契约不该知道
+    HTTP 长什么样。前端拿 ``threadId`` + ``path`` 自己拼。
+    """
+
+    type: Literal["files_presented"] = "files_presented"
+    task_id: str
+    files: list[PresentedFile]
+
+
 class RunEndEvent(_MessageEvent):
     """一次运行的收尾事件，与 :class:`RunStartEvent` 对称（T8）。
 
@@ -178,6 +213,7 @@ RunEvent = Annotated[
     | TaskEndEvent
     | ReplanEvent
     | SummaryEvent
+    | FilesPresentedEvent
     | RunEndEvent,
     Field(discriminator="type"),
 ]
@@ -189,8 +225,10 @@ RunEventAdapter: TypeAdapter[RunEvent] = TypeAdapter(RunEvent)
 
 __all__ = [
     "EventCategory",
+    "FilesPresentedEvent",
     "MessagesEvent",
     "PlanEvent",
+    "PresentedFile",
     "ReplanEvent",
     "RunEndEvent",
     "RunEvent",

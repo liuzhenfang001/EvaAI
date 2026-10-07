@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -41,11 +42,22 @@ from uuid import uuid4
 
 from langchain_core.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
+from pydantic import ValidationError
 
 from evaharness.agents.lead_agent.agent import LEAD_LANE, LeadContext
+from evaharness.agents.lead_agent.custom_events import PRESENT_FILES_KIND
 from evaharness.agents.messages import final_text
-from evaharness.agents.plan_exec.events import MessagesEvent, RunEndEvent, RunEvent, RunStartEvent
+from evaharness.agents.plan_exec.events import (
+    FilesPresentedEvent,
+    MessagesEvent,
+    PresentedFile,
+    RunEndEvent,
+    RunEvent,
+    RunStartEvent,
+)
 from evaharness.checkpoint import lead_thread_id
+
+logger = logging.getLogger(__name__)
 
 
 class RunCancellation:
@@ -141,7 +153,14 @@ async def run_lead_agent(
                     chunk=chunk.model_dump(mode="json"),
                     metadata=metadata if isinstance(metadata, dict) else {},
                 )
-            else:
+            elif stream_kind == "custom":
+                # 工具经 runtime.stream_writer 送出来的载荷（见 custom_events 模块）。
+                # **必须排在 values 的 else 之前**——否则载荷会被当成 state 快照覆盖
+                # last_state，症状是 run_end.output 莫名其妙变成一段工具载荷。
+                event = _tool_event(data)
+                if event is not None:
+                    yield event
+            else:  # values
                 last_state = data
     except Exception as exc:  # 仅剩串行化等处理错误：图级失败已由 pump 转成 error sentinel
         yield RunEndEvent(status="failed", error=f"{type(exc).__name__}: {exc}")
@@ -186,8 +205,33 @@ def _astream(
         payload,
         config={"configurable": {"thread_id": coordinate}},
         context=LeadContext(session_id=session_id, thread_id=coordinate, run_id=run_id),
-        stream_mode=["messages", "values"],
+        stream_mode=["messages", "values", "custom"],
     )
+
+
+def _tool_event(payload: Any) -> RunEvent | None:
+    """把工具经 custom 流送出的载荷翻成 ``RunEvent``；不认识的一律返回 ``None``。
+
+    **白名单**，不是「有 ``type`` 字段就照着构造」：自定义流是开放的，任何工具都能往里写
+    任意 JSON——照单全收的话，一个工具就能伪造 ``run_end`` 把本轮运行提前结束掉。所以这里
+    只认自己定义过的 kind，映射关系写死在代码里。
+
+    载荷不合法（缺字段、类型不对）时记一条警告后跳过，**不抛**：与 journal 记账失败同一个
+    立场——可观测/附属通道出问题不该把用户的这一轮跑挂。
+    """
+    if not isinstance(payload, Mapping) or payload.get("kind") != PRESENT_FILES_KIND:
+        return None
+    files = payload.get("files") or []
+    if not files:
+        return None
+    try:
+        return FilesPresentedEvent(
+            task_id=LEAD_LANE,
+            files=[PresentedFile.model_validate(file) for file in files],
+        )
+    except ValidationError:
+        logger.warning("工具送出的文件载荷不合法，已忽略", exc_info=True)
+        return None
 
 
 __all__ = ["RunCancellation", "run_lead_agent"]
