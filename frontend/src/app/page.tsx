@@ -17,6 +17,7 @@ import {
   TimelineStep,
   useChat,
 } from "@/core/chat/useChat";
+import Markdown from "./Markdown";
 
 /**
  * 右侧任务编排面板暂时下线：折叠式对话已经承载了「过程可见性」，而它是绝对定位的浮动
@@ -247,7 +248,7 @@ function RoundBlock({
       </button>
       {open && (
         <div className="round-body">
-          {round.text && <div>{round.text}</div>}
+          {round.text && <Markdown text={round.text} />}
           {/* 展开时把这一轮调了什么、带什么参数都摊开——收起时只留摘要行里的名字。 */}
           <ul className="round-tools">
             {round.toolCalls.map((call) => (
@@ -310,7 +311,7 @@ function AssistantBubble({
   return (
     <div className="bubble">
       {rounds.length > 0 && <ProcessBlock rounds={rounds} live={streaming && current && !answer} />}
-      {answer && <div className="final">{answer}</div>}
+      {answer && <Markdown text={answer} className="final" />}
       {message.note && <div className="note">⚠️ {message.note}</div>}
     </div>
   );

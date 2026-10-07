@@ -98,8 +98,8 @@ _Avoid_: 权限, ACL
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T9**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7），引用时写全「T3（#4）」以免混淆。T7–T9 都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)。
+**T1–T11**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测
