@@ -5,6 +5,7 @@ import { API_URL } from "@/core/api/config";
 import { parseSSE } from "@/core/api/stream";
 import { applyFrame, emptyRunState, JournalEntry, RunState, toFrame } from "@/core/chat/runState";
 import {
+  cancelRun,
   deleteThread,
   fetchThreadJournal,
   listThreads,
@@ -123,6 +124,16 @@ export function useChat() {
     [streaming, state.threadId, refreshThreads],
   );
 
+  const cancel = useCallback(() => {
+    // 只发取消请求，**不 abort fetch**：让 SSE 保持打开，后端经同一条流把
+    // run_end(cancelled) 与 end 送回来，`send` 的 for-await 自然走到 finally 把
+    // streaming 置 false。终态走同一条流，不搞前端乐观写入的第二条路径（ADR-0006）。
+    if (!state.runId || !streaming) return;
+    void cancelRun(state.runId).catch(() => {
+      // 取消失败（例如 run 恰好已经自然结束）不影响 UI：真正的状态变化来自 SSE 终态。
+    });
+  }, [state.runId, streaming]);
+
   const rename = useCallback(
     async (threadId: string, title: string) => {
       try {
@@ -164,6 +175,7 @@ export function useChat() {
     streaming,
     error,
     send,
+    cancel,
     openThread,
     startNewThread,
     rename,

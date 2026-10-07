@@ -334,6 +334,7 @@ export default function Home() {
     streaming,
     error,
     send,
+    cancel,
     openThread,
     startNewThread,
     rename,
@@ -472,9 +473,16 @@ export default function Home() {
             placeholder="发消息给 EvaAI…"
             disabled={streaming}
           />
-          <button type="submit" disabled={streaming || !input.trim()}>
-            {streaming ? "…" : "发送"}
-          </button>
+          {streaming ? (
+            /* 运行中发送按钮换成「停止」：取消这一轮，终态（已取消）仍经 SSE 回来。 */
+            <button type="button" onClick={cancel} title="停止本轮回答">
+              停止
+            </button>
+          ) : (
+            <button type="submit" disabled={!input.trim()}>
+              发送
+            </button>
+          )}
         </form>
       </main>
 

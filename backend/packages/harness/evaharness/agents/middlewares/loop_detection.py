@@ -29,6 +29,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
 from evaharness.agents.middlewares.context import thread_bucket
+from evaharness.agents.middlewares.forced_stop import strip_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -62,23 +63,6 @@ def _hash_tool_calls(tool_calls: list[dict]) -> str:
         for tc in tool_calls
     )
     return hashlib.md5(json.dumps(normalized, sort_keys=True).encode()).hexdigest()[:12]
-
-
-def _strip_tool_calls(last_msg, note: str):
-    """清空 tool_calls 元数据，追加说明文本，强制转成普通文本回复。"""
-    content = last_msg.content
-    if isinstance(content, str):
-        content = f"{content}\n\n{note}" if content else note
-    elif isinstance(content, list):
-        content = [*content, {"type": "text", "text": note}]
-    else:
-        content = note
-    update: dict = {"tool_calls": [], "content": content}
-    additional_kwargs = dict(getattr(last_msg, "additional_kwargs", {}) or {})
-    additional_kwargs.pop("tool_calls", None)
-    additional_kwargs.pop("function_call", None)
-    update["additional_kwargs"] = additional_kwargs
-    return last_msg.model_copy(update=update)
 
 
 class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
@@ -136,7 +120,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         if count >= self.hard_limit:
             self._stop_reason[thread_id] = "loop_capped"
             logger.error("Loop hard limit reached — forcing stop (thread=%s)", thread_id)
-            return {"messages": [_strip_tool_calls(last, _HARD_STOP_MSG)]}
+            return {"messages": [strip_tool_calls(last, _HARD_STOP_MSG)]}
 
         if count >= self.warn_threshold:
             warned = self._warned.setdefault(thread_id, set())

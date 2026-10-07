@@ -18,12 +18,14 @@ from evaharness.agents.lead_agent import (
     DEFAULT_LEAD_PROMPT,
     LEAD_LANE,
     TASK_TOOL_NAME,
+    RunCancellation,
     build_lead_middlewares,
     make_lead_agent,
     make_subagent_graph,
     run_lead_agent,
 )
-from evaharness.agents.middlewares import build_default_middlewares
+from evaharness.agents.middlewares import StepBudgetMiddleware, build_default_middlewares
+from evaharness.agents.plan_exec.events import RunEvent
 from evaharness.config.app_config import SummarizationConfig
 
 
@@ -72,9 +74,11 @@ def test_the_task_tool_is_advertised_in_the_default_prompt():
 
 
 def test_summarization_is_off_by_default():
-    """摘要会额外花一次 LLM 调用，不能悄悄挂上。"""
+    """摘要会额外花一次 LLM 调用，不能悄悄挂上。步数预算始终在链上（主 Agent 专属）。"""
     chain = build_lead_middlewares(_model("x"))
-    assert [type(m) for m in chain] == [type(m) for m in build_default_middlewares()]
+    assert [type(m) for m in chain] == [type(m) for m in build_default_middlewares()] + [
+        StepBudgetMiddleware
+    ]
 
 
 def test_summarization_is_appended_innermost():
@@ -82,14 +86,17 @@ def test_summarization_is_appended_innermost():
     chain = build_lead_middlewares(_model("x"), summarization=SummarizationConfig())
 
     assert isinstance(chain[-1], SummarizationMiddleware)
-    assert [type(m) for m in chain[:-1]] == [type(m) for m in build_default_middlewares()]
+    assert isinstance(chain[-2], StepBudgetMiddleware)
+    assert [type(m) for m in chain[:-2]] == [type(m) for m in build_default_middlewares()]
 
 
 def test_disabled_summarization_keeps_the_default_chain():
     config = SummarizationConfig(enabled=False)
     chain = build_lead_middlewares(_model("x"), summarization=config)
 
-    assert [type(m) for m in chain] == [type(m) for m in build_default_middlewares()]
+    assert [type(m) for m in chain] == [type(m) for m in build_default_middlewares()] + [
+        StepBudgetMiddleware
+    ]
 
 
 def test_subagent_graph_rejects_the_task_tool():
@@ -221,3 +228,48 @@ async def test_cancellation_passes_through_without_a_run_end():
 
     assert seen[0] == "run_start"
     assert "run_end" not in seen
+
+
+@pytest.mark.asyncio
+async def test_active_cancel_emits_a_cancelled_run_end():
+    """主动取消（取消内层 pump）要产 ``run_end(status="cancelled")``。
+
+    与被动取消的区别：这里取消的是经 :class:`RunCancellation` 交出来的**内层** pump
+    task，外层响应 task 仍存活，所以终态事件能送出；被动取消取消的是外层消费 task，
+    终态送不出去（上面那条）。取消不伪装成失败——``cancelled`` 是独立的终态。
+    """
+    entered = asyncio.Event()
+    blocker = asyncio.Event()
+
+    @tool
+    async def hang(x: str) -> str:
+        """永不返回的工具。"""
+        entered.set()
+        await blocker.wait()
+        return "never"
+
+    model = StreamToolFake(
+        messages=iter([AIMessage(content="开始", tool_calls=[{"name": "hang", "args": {"x": "1"}, "id": "c1"}])])
+    )
+    agent = make_lead_agent(model, [hang])
+
+    holder: dict[str, asyncio.Task] = {}
+    cancellation = RunCancellation(
+        register=lambda task: holder.__setitem__("pump", task),
+        unregister=lambda: holder.pop("pump", None),
+    )
+
+    seen: list[RunEvent] = []
+
+    async def consume() -> None:
+        async for event in run_lead_agent("你好", agent=agent, cancellation=cancellation):
+            seen.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    holder["pump"].cancel()  # 主动取消内层
+    await asyncio.wait_for(task, timeout=5)  # 外层应正常收尾，不抛 CancelledError
+
+    assert seen[0].type == "run_start"
+    assert seen[-1].type == "run_end"
+    assert seen[-1].status == "cancelled"

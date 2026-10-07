@@ -4,11 +4,14 @@
 thread——界面上是一段连续对话，模型却一个字都记不住。这里把机制钉死。
 """
 
+import asyncio
+
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from plan_exec_fakes import CallRecordingFake, collect
+from plan_exec_fakes import CallRecordingFake, StreamToolFake, collect
 
 from evaharness.agents.lead_agent import make_lead_agent, run_lead_agent
 from evaharness.checkpoint import delete_session_checkpoints, lead_thread_id
@@ -90,6 +93,50 @@ async def test_deleting_the_session_takes_the_memory_with_it():
 
     assert deleted == 1
     assert await _threads(saver) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_turn_interrupted_mid_tool_still_leaves_the_request_in_memory():
+    """被中断的运行（没跑到终态）也得让下一轮看得到用户说了什么。
+
+    resume 收口（T5）：不做断点续跑，但「没得到回复的消息」必须留在会话记忆里，
+    下一轮模型要能看见它并补答。中断发生在工具执行中——正是最「半截」的状态：用户
+    已经说了，AI 还没答。
+    """
+    entered = asyncio.Event()
+    blocker = asyncio.Event()
+
+    @tool
+    async def hang(x: str) -> str:
+        """永不返回的工具。"""
+        entered.set()
+        await blocker.wait()
+        return "never"
+
+    model = StreamToolFake(
+        messages=iter(
+            [
+                AIMessage(content="开始", tool_calls=[{"name": "hang", "args": {"x": "1"}, "id": "c1"}]),
+                AIMessage(content="补答：你刚才问的是「我的问题」"),
+            ]
+        )
+    )
+    agent = make_lead_agent(model, [hang], checkpointer=InMemorySaver())
+
+    async def first() -> None:
+        async for _ in run_lead_agent("我的问题", agent=agent, thread_id="th-1"):
+            pass
+
+    task = asyncio.create_task(first())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    task.cancel()  # 被动取消：没产 run_end，这一轮「半截」悬着
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # 第二轮同一会话：模型应当看得到第一轮的用户消息并补答
+    await _say(agent, "接着答", "th-1")
+
+    assert "我的问题" in _humans(model.calls[-1])
 
 
 # --------------------------------------------------------------------------- #

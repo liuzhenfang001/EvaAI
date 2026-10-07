@@ -8,6 +8,7 @@
 看见「每个请求各建了一张」。任何挂 ``chat.router`` 的裸 app 都必须给这个属性。
 """
 
+import asyncio
 import itertools
 import json
 from typing import Any
@@ -22,6 +23,7 @@ from plan_exec_fakes import RoutingStructuredFake, fake_app_config
 
 from app.gateway.agents import AgentFactory
 from app.gateway.routers import chat
+from app.gateway.run_registry import RunRegistry
 from evaharness.agents.lead_agent import LEAD_LANE
 from evaharness.agents.plan_exec.schemas import Plan, PlanTask, ReplanDecision
 from evaharness.journal.stores import MemoryJournalStore
@@ -90,9 +92,12 @@ def _client(store: MemoryJournalStore, journal_config=None) -> httpx.AsyncClient
     app.state.journal_store = store
     app.state.journal_config = journal_config
     app.state.agent_factory = factory
+    registry = RunRegistry()
+    app.state.run_registry = registry
     app.include_router(chat.router)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
     client.factory = factory  # type: ignore[attr-defined]
+    client.registry = registry  # type: ignore[attr-defined]
     return client
 
 
@@ -272,3 +277,30 @@ async def test_each_request_builds_its_own_plan_roles():
     assert plans[0].planner is not plans[1].planner
     assert plans[0].executor is not plans[1].executor
     assert plans[0].replanner is not plans[1].replanner
+
+
+# --------------------------------------------------------------------------- #
+# 主动取消端点（T5）
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_cancel_returns_404_when_nothing_is_running():
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        resp = await client.post("/chat/cancel", json={"run_id": "nope"})
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cancel_cancels_a_registered_run():
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        task = asyncio.create_task(asyncio.Event().wait())  # 永不结束的占位
+        client.registry.register("r1", task)
+
+        resp = await client.post("/chat/cancel", json={"run_id": "r1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"cancelled": True}
+    with pytest.raises(asyncio.CancelledError):
+        await task

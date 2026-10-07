@@ -5,6 +5,7 @@ from langchain.agents.middleware import AgentMiddleware
 from evaharness.agents.middlewares.input_sanitization import InputSanitizationMiddleware
 from evaharness.agents.middlewares.llm_error_handling import LLMErrorHandlingMiddleware
 from evaharness.agents.middlewares.loop_detection import LoopDetectionMiddleware
+from evaharness.agents.middlewares.step_budget import StepBudgetMiddleware
 from evaharness.agents.middlewares.terminal_response import TerminalResponseMiddleware
 from evaharness.agents.middlewares.token_usage import TokenUsageMiddleware
 from evaharness.agents.middlewares.tool_error_handling import ToolErrorHandlingMiddleware
@@ -28,6 +29,7 @@ __all__ = [
     "ToolErrorHandlingMiddleware",
     "TokenUsageMiddleware",
     "LoopDetectionMiddleware",
+    "StepBudgetMiddleware",
     "TerminalResponseMiddleware",
     "build_default_middlewares",
 ]

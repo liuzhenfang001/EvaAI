@@ -161,7 +161,12 @@ class AgentFactory:
         summary_model = None
         if summarization.enabled and summarization.model:
             summary_model = self._model_factory(summarization.model)
-        return build_lead_middlewares(model, summarization=summarization, summary_model=summary_model)
+        return build_lead_middlewares(
+            model,
+            summarization=summarization,
+            summary_model=summary_model,
+            max_steps=self.app_config.agent.max_steps,
+        )
 
     def _create_model(self, name: str | None) -> BaseChatModel:
         """缺省模型构造：按 profile 名从配置里建一个（``None`` = 主 profile）。"""

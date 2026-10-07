@@ -152,7 +152,7 @@ class RunEndEvent(_MessageEvent):
     """
 
     type: Literal["run_end"] = "run_end"
-    status: Literal["completed", "failed"] = "completed"
+    status: Literal["completed", "failed", "cancelled"] = "completed"
     output: str | None = None
     error: str | None = None
 

@@ -295,3 +295,33 @@ describe("失败备注", () => {
     expect(message.note).toContain("炸了");
   });
 });
+
+// --------------------------------------------------------------------------- #
+// 取消备注（T5）
+// --------------------------------------------------------------------------- #
+
+describe("取消备注", () => {
+  it("运行取消写进 note，且不算失败", () => {
+    // 取消是独立的终态，不是失败——文案不该带「失败」二字（ADR-0005）。
+    const message = assistant(
+      project([
+        START,
+        model({ tool_call_chunks: [{ name: "slow", args: "{}", id: "c1", index: 0 }] }),
+        ["run_end", { status: "cancelled" }],
+      ]),
+    );
+
+    expect(message.note).toBe("已取消");
+    expect(message.note).not.toContain("失败");
+  });
+
+  it("取消时最终回复保持完整，备注不拼进正文", () => {
+    // 与失败同一规矩：备注进独立的 note，不截断「模型已经说了什么」。
+    const message = assistant(
+      project([START, text("查到了，是 18:04"), ["run_end", { status: "cancelled" }]]),
+    );
+
+    expect(finalText(message)).toBe("查到了，是 18:04");
+    expect(message.note).toBe("已取消");
+  });
+});

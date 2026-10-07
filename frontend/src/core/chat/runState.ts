@@ -195,7 +195,7 @@ interface RawRunStart {
 }
 
 interface RawRunEnd {
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "cancelled";
   output?: string | null;
   error?: string | null;
 }
@@ -332,25 +332,30 @@ function applyRunStart(state: RunState, data: RawRunStart): RunState {
 }
 
 function applyRunEnd(state: RunState, data: RawRunEnd): RunState {
-  const failed = data.status === "failed";
+  const note =
+    data.status === "failed"
+      ? `运行失败：${data.error ?? "未知原因"}`
+      : data.status === "cancelled"
+        ? "已取消"
+        : null;
   return {
     ...state,
-    messages: failed ? appendRunFailure(state, data.error ?? "未知原因") : state.messages,
+    messages: note ? appendRunNote(state, note) : state.messages,
     timeline: pushStep(state.timeline, {
       taskId: "",
       kind: "end",
-      text: failed ? `运行失败：${data.error ?? "未知原因"}` : "本轮完成",
+      text: note ?? "本轮完成",
     }),
   };
 }
 
-/** 把运行级失败写进这一轮的气泡——与 `applyTaskEnd` 对失败的处理对称：
- *  失败必须出现在对话里，不能只躺在时间线上。
+/** 把运行级备注（失败 / 取消）写进这一轮的气泡——与 `applyTaskEnd` 对失败的处理对称：
+ *  失败与取消都必须出现在对话里，不能只躺在时间线上。
  *
  *  写进独立的 `note` 而不是拼进正文：正文是**推导出来的**最终回复，往里拼接会把一段
- *  完整的回答截成半句（「失败备注」和「模型说了什么」是两件事）。 */
-function appendRunFailure(state: RunState, error: string): ChatMessage[] {
-  const note = `运行失败：${error}`;
+ *  完整的回答截成半句（「失败备注」和「模型说了什么」是两件事）。取消不是失败——
+ *  「已取消」是独立的终态，文案不带「失败」二字（ADR-0005）。 */
+function appendRunNote(state: RunState, note: string): ChatMessage[] {
   const prefix = `${state.runId ?? ""}:`;
   let index = -1;
   state.messages.forEach((message, i) => {

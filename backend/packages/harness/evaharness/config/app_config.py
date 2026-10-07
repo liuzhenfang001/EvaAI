@@ -84,6 +84,14 @@ class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     summarization: SummarizationConfig = SummarizationConfig()
+    max_steps: int = 100
+    """主 Agent 单次运行内「带工具调用的模型响应」步数上限。
+
+    远低于图级 ``recursion_limit``：``create_agent`` 编译时把它设为 9_999（**不是**
+    langgraph 的裸默认 25），所以步数上限的优雅收尾（剥掉 ``tool_calls``、模型转文本）
+    总是先于那句看不懂的 ``GraphRecursionError`` 触发。见
+    :class:`~evaharness.agents.middlewares.step_budget.StepBudgetMiddleware`。
+    """
 
 
 class ToolConfig(BaseModel):

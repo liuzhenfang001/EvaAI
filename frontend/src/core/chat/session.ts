@@ -78,3 +78,20 @@ export async function fetchThreadJournal(threadId: string): Promise<JournalEntry
   const resp = await fetch(`${API_URL}/threads/${encodeURIComponent(threadId)}/journal`);
   return readJson<JournalEntry[]>(resp, "拉取会话记录");
 }
+
+/** 取消一条正在跑的流（T5）。
+ *
+ * 结果**不**从这里回来——取消成功后，后端经同一条 SSE 流下发
+ * ``run_end(status="cancelled")`` 与 ``end``，前端照常走到自然的收尾。这里只负责把
+ * 请求发出去；未命中（run 已自然结束）后端回 404，调用方自行决定要不要理会。
+ */
+export async function cancelRun(runId: string): Promise<void> {
+  const resp = await fetch(`${API_URL}/chat/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run_id: runId }),
+  });
+  if (!resp.ok) {
+    throw new Error(`取消失败：HTTP ${resp.status}`);
+  }
+}

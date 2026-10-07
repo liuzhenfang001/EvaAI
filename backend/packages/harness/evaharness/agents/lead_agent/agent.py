@@ -22,7 +22,7 @@ from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
 from langchain.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 
-from evaharness.agents.middlewares import build_default_middlewares
+from evaharness.agents.middlewares import StepBudgetMiddleware, build_default_middlewares
 from evaharness.config.app_config import SummarizationConfig
 
 LEAD_LANE = "main"
@@ -82,15 +82,21 @@ def build_lead_middlewares(
     *,
     summarization: SummarizationConfig | None = None,
     summary_model: BaseChatModel | None = None,
+    max_steps: int = 100,
 ) -> list[AgentMiddleware]:
-    """lead agent 的中间件链 = EvaAI 默认链 + 会话摘要压缩。
+    """lead agent 的中间件链 = EvaAI 默认链 + 步数预算 + 会话摘要压缩。
+
+    步数预算只接在**主 Agent** 这条链上，不进 :func:`build_default_middlewares`——
+    子 agent 图仍由 langgraph 默认 recursion_limit + 循环检测兜住，本片不扩（它的坐标
+    是运行级的，跨轮复用预算没有意义）。
 
     摘要挂在**最后（最内层）**，这是有理由的：它在 ``before_model`` 里改 state，
     排在最后意味着它是最后一道改消息的工序——量到的 token 数就是模型真正会收到的
-    数量（``InputSanitizationMiddleware`` 的包裹与 ``LoopDetectionMiddleware`` 的
-    警告注入都已经生效）。
+    数量（``InputSanitizationMiddleware`` 的包裹、``LoopDetectionMiddleware`` 的
+    警告注入与 :class:`StepBudgetMiddleware` 的强制收尾都已经生效）。
     """
     chain: list[AgentMiddleware] = list(build_default_middlewares())
+    chain.append(StepBudgetMiddleware(max_steps=max_steps))
     if summarization is None or not summarization.enabled:
         return chain
 

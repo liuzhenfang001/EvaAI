@@ -14,7 +14,7 @@ from evaharness.agents.lead_agent.agent import (
     make_lead_agent,
     make_subagent_graph,
 )
-from evaharness.agents.lead_agent.runner import run_lead_agent
+from evaharness.agents.lead_agent.runner import RunCancellation, run_lead_agent
 from evaharness.agents.lead_agent.subagent import make_task_tool
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     "LEAD_LANE",
     "TASK_TOOL_NAME",
     "LeadContext",
+    "RunCancellation",
     "build_lead_middlewares",
     "make_lead_agent",
     "make_subagent_graph",

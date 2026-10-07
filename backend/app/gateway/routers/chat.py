@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from app.gateway.sse import sse_consumer
 from app.tools.sandbox import ensure_session_dirs
-from evaharness.agents.lead_agent import run_lead_agent
+from evaharness.agents.lead_agent import RunCancellation, run_lead_agent
 from evaharness.agents.plan_exec import run_plan_exec
 from evaharness.agents.plan_exec.events import RunEvent
 from evaharness.journal import RunJournal, journaled, validate_id
@@ -47,6 +47,12 @@ class ChatRequest(BaseModel):
     thread_id: str | None = None
 
 
+class CancelRequest(BaseModel):
+    """取消请求体：按 ``run_id`` 触达一条正在跑的流（T5）。"""
+
+    run_id: str
+
+
 @router.post("/stream")
 async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     """跑一轮主 Agent 并以 SSE 流式返回。
@@ -58,21 +64,50 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     同一条事件流喂两个消费者：SSE 给前端实时看，RunJournal 落盘供事后回放
     （ADR-0006 定的「一个产出两个消费」）。``run_id`` 与 ``thread_id`` 在这里生成并
     同时交给两者，所以前端拿到的 id 一定能查到对应的记录。
+
+    ``run_id`` 同时登记进 ``state.run_registry``（经 :class:`RunCancellation`），
+    让 ``/chat/cancel`` 能在运行中触达这条流。
     """
     state = request.app.state
     thread_id = _resolve_thread_id(body)
     # 会话一诞生就有它的文件空间：用户能在对话前把文件放进 /input，而「有没有文件空间」
     # 不取决于模型想没想起来调工具。必须在建图与开跑之前。
     ensure_session_dirs(thread_id)
+    run_id = uuid4().hex[:12]
     return _stream(
         request,
         run_lead_agent(
             body.content,
             agent=state.agent_factory.lead(),
-            run_id=uuid4().hex[:12],
+            run_id=run_id,
             thread_id=thread_id,
+            cancellation=_make_cancellation(state, run_id),
         ),
         thread_id,
+    )
+
+
+@router.post("/cancel")
+async def cancel_run(body: CancelRequest, request: Request) -> dict[str, bool]:
+    """取消一条正在跑的流。
+
+    命中且仍在跑返回 ``{"cancelled": true}``；未命中（run 不存在、或已自然结束）返回
+    404——取消一个已经结束的 run 不是错，但「我们确实没取消任何东西」该让前端知道。
+    """
+    registry = getattr(request.app.state, "run_registry", None)
+    if registry is None or not registry.cancel(body.run_id):
+        raise HTTPException(status_code=404, detail="没有正在运行的 run")
+    return {"cancelled": True}
+
+
+def _make_cancellation(state, run_id: str) -> RunCancellation:
+    """把 registry + run_id 绑成 runner 要的取消接缝；没有 registry 就退化成 no-op。"""
+    registry = getattr(state, "run_registry", None)
+    if registry is None:
+        return RunCancellation()
+    return RunCancellation(
+        register=lambda task: registry.register(run_id, task),
+        unregister=lambda: registry.unregister(run_id),
     )
 
 

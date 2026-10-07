@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.gateway.agents import AgentFactory
+from app.gateway.run_registry import RunRegistry
 from app.gateway.routers import chat, threads
 from app.tools.registry import build_tools
 from evaharness.checkpoint.sqlite_saver import make_sqlite_checkpointer, prune_checkpoints
@@ -76,6 +77,10 @@ async def lifespan(app: FastAPI):
 
         # 建图的唯一入口。它只持有参数、不持有图：每个请求调 lead() / plan_exec() 现建。
         app.state.agent_factory = AgentFactory(app_config, business_tools, checkpointer=saver)
+
+        # 运行中 run 的登记表：取消端点靠它触达正在跑的 run（T5）。与 checkpointer 一样
+        # 是长命共享物，但**没有活跃事件循环的约束**——只是一个 dict。
+        app.state.run_registry = RunRegistry()
 
         # 启动期 smoke build：装配一遍再丢掉，把「启动期就该发现」的错误挡在服务起来之前
         # ——模型 profile 的 use 指向不存在的类、中间件链里塞了非中间件对象、工具列表里塞了
