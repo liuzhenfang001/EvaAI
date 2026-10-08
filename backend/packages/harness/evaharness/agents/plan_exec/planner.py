@@ -3,7 +3,8 @@
 ``method`` 默认 ``"function_calling"`` 而非 ``langchain-openai`` 的默认值
 ``"json_schema"``：后者会发 ``response_format={"type": "json_schema", ...}``，
 而 OpenAI 兼容端点（含 DeepSeek）普遍不支持，会直接 HTTP 400。上游的自动降级
-只覆盖 ``gpt-3*`` / ``gpt-4*`` / ``gpt-4``，认不出 ``deepseek-chat``。
+只按模型名认 ``gpt-3*`` / ``gpt-4*``，认不出 DeepSeek 这类第三方模型——所以这里
+**写死**，不跟着模型名走（也正因如此，换模型名不会影响这条选择）。
 """
 
 from __future__ import annotations

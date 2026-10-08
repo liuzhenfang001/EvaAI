@@ -44,6 +44,18 @@ _Avoid_: 重规划器, 动态规划器
 Plan-Exec 里承载单个任务的 ReAct 图（封存路径）。
 _Avoid_: worker, ReAct 执行器
 
+**思考档位（thinking level）**：
+一次运行的思考深度，四选一：`off`（界面上叫「极速」）、`low`、`high`、`max`。它随每次请求下发、
+随 `run_start` 事件回显，所以回放时前端知道历史那一轮用的是哪一档。
+_Avoid_: reasoning_effort（那是**发给 API 的字段名**，不是我们这个概念的叫法）、思考模式（那只说了
+开没开、没说多深，而这两件事在本项目里是**一个**四选一）
+
+**思考内容（reasoning）**：
+模型给出的推理过程（DeepSeek 的 `reasoning_content`），与正文**是两条并行的流**，在界面上
+**自成一个步骤**（「第 N 步 · 思考」），与「第 N 步 · 调用 X」共用同一套折叠与实时打字。
+它属于「过程」，**不是**模型对用户说的话。
+_Avoid_: 思维链、CoT、推理（这三个都太宽，指不清是「模型想的」还是「它答复的」）
+
 **subagent（子 agent）**：
 由主 Agent 通过 `task` 工具派发出去、独立完成**一件事**的 ReAct 图。它看不到父对话，
 中间步骤也不会回流到主对话——**上下文隔离才是它存在的理由**，不是「更快」。
@@ -104,8 +116,8 @@ _Avoid_: artifact, 产出物, 附件, 文件引用（DeerFlow 管这个叫 artif
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T11**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)。
+**T1–T12**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)。二期到 T12 收尾，之后是[三期的范围](https://github.com/liuzhenfang001/EvaAI/issues/13)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测

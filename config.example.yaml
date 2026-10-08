@@ -3,12 +3,18 @@
 config_version: 1
 log_level: info
 
+# 模型 profile。`use` 指向实现类；`model` 是发给 API 的模型名；其余键透传给构造函数。
+#
+# 用 `DeepSeekChatModel` 而不是 `langchain_openai:ChatOpenAI`：后者的三个落点都不处理
+# DeepSeek 的 `reasoning_content`（它文档里明说不提取第三方厂商的非标准字段），于是思考内容
+# 既回不到请求体、也到不了前端。见 docs/adr/0016。
 models:
-  - name: deepseek-chat
-    use: langchain_openai:ChatOpenAI
-    model: deepseek-chat
+  - name: deepseek-flash
+    use: evaharness.models.deepseek:DeepSeekChatModel
+    model: deepseek-flash
     base_url: https://api.deepseek.com/v1
     api_key: $DEEPSEEK_API_KEY
+    # 思考模式下 provider 会忽略 temperature（官方说明），留着是给「极速」模式用的。
     temperature: 0.0
 
 # Checkpoint 持久化（SQLite）：保存每个 ReAct 任务图内部的 state，

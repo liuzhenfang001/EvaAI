@@ -73,7 +73,24 @@ const ARGS_LIMIT = 2000;
  * 与 LangGraph 的节点名无关（`model` 节点跑一次产出一轮）。这样定义的好处是**回放不需要
  * 任何额外信息**——journal 里存的 chunk 序列本身就够重建它。
  */
+/**
+ * 一轮是**想**还是**说**。
+ *
+ * 思考是独立的一步，不是「回答的附带信息」：模型先想、再说，两段各有各的起止，界面上也要
+ * 各占一行（「第 N 步 · 思考」/「第 N 步 · 调用 X」）。合成一个轮次再在内部拆的话，步骤编号
+ * 会与实际发生的事对不上。
+ */
+export type RoundKind = "thinking" | "answer";
+
 export interface Round {
+  kind: RoundKind;
+  /**
+   * 这一步的内容。
+   *
+   * ``thinking`` 步里是模型的推理过程（DeepSeek 的 ``reasoning_content``，来自 chunk 的
+   * ``additional_kwargs``——后端不用为此改事件形状，``MessagesEvent.chunk`` 是整条消息 dump
+   * 出来的，那个字段本来就在里面）；``answer`` 步里是它对用户说的话。
+   */
   text: string;
   toolCalls: ToolCall[];
   /**
@@ -136,16 +153,22 @@ export interface ChatMessage {
   taskId?: string;
 }
 
-/** 最终回复 = 最后一轮**且那一轮没有工具调用**。没有就返回空串，不编造。 */
+/** 最终回复 = 最后一步**是「说」的那类、且没有工具调用**。否则返回空串，不编造。
+ *
+ * `kind === "answer"` 这个条件不是多余的：模型**只想了没来得及说**（截断、超时、取消）时，
+ * 最后一步是 `thinking`——少了这个判断，那段推理会被当成对用户的答复显示出来。
+ */
 export function finalText(message: ChatMessage): string {
   const last = message.rounds[message.rounds.length - 1];
-  return last && last.toolCalls.length === 0 ? last.text : "";
+  return last && last.kind === "answer" && last.toolCalls.length === 0 ? last.text : "";
 }
 
-/** 过程轮次 = 除最终回复那一轮以外的全部。 */
+/** 过程步骤 = 除最终回复那一步以外的全部（**包含**所有的「思考」步）。 */
 export function processRounds(message: ChatMessage): Round[] {
   const last = message.rounds[message.rounds.length - 1];
-  return last && last.toolCalls.length === 0 ? message.rounds.slice(0, -1) : message.rounds;
+  return last && last.kind === "answer" && last.toolCalls.length === 0
+    ? message.rounds.slice(0, -1)
+    : message.rounds;
 }
 
 /** 这个气泡有没有任何可显示的东西——占位符判据与空气泡守卫都用它。 */
@@ -162,6 +185,14 @@ export function hasOutput(message: ChatMessage): boolean {
  */
 export type RunMode = "react" | "plan";
 
+/**
+ * 这一轮的思考档位，由 `run_start` 下发。
+ *
+ * 与 `RunMode` 一样，它是**回显**而不是前端自己记的：刷新后从 journal 回放时，前端只能从
+ * 事件里学到「那一轮用的是哪一档」。没有这个字段的老记录回退成 `off`——它们确实没有思考。
+ */
+export type ThinkingLevel = "off" | "low" | "high" | "max";
+
 export interface RunState {
   messages: ChatMessage[];
   plan: PlanTaskView[] | null;
@@ -173,6 +204,8 @@ export interface RunState {
   threadId: string | null;
   /** 本轮走的路径；由 `run_start` 下发。 */
   mode: RunMode | null;
+  /** 本轮的思考档位；由 `run_start` 下发（回放同样来自它）。 */
+  thinking: ThinkingLevel;
   timeline: TimelineStep[];
 }
 
@@ -199,6 +232,9 @@ export const emptyRunState = (): RunState => ({
   runId: null,
   threadId: null,
   mode: null,
+  // 空白状态给 `off` 而不是 `null`：它是一个**四选一的档位**，不是「还不知道」。没有运行
+  // 时「不思考」就是事实，界面据此不渲染思考区，不需要再判一次空。
+  thinking: "off",
   timeline: [],
 });
 
@@ -215,6 +251,13 @@ interface RawRunStart {
    * 字段，而那些行确实都是 Plan-Exec 写的。写成 `react` 会让旧会话整段渲染错。
    */
   mode?: RunMode;
+  /**
+   * 缺省 `off` 同样是**历史回退**：老 journal 行里没有这个字段，而那些运行确实没有思考。
+   *
+   * **不能跟着请求层的默认档（`high`）走**——那会让旧记录凭空多出一段并不存在的思考，
+   * 而回放的全部意义就是「与实时逐字一致」。两边的缺省各自对着自己那一侧的事实。
+   */
+  thinking?: ThinkingLevel;
 }
 
 interface RawRunEnd {
@@ -278,6 +321,13 @@ interface RawChunk {
   tool_call_id?: unknown;
   tool_calls?: RawToolCall[];
   tool_call_chunks?: RawToolCall[];
+  /**
+   * 模型的非标准附加字段。DeepSeek 的思考内容就放在 `reasoning_content` 里。
+   *
+   * 它是**后端 `DeepSeekChatModel` 补进来的**：`langchain_openai` 自己会把这个字段丢掉，
+   * 所以那层适配器把它捞回 `additional_kwargs`。前端这边不用管来源，只当它是个可选字段。
+   */
+  additional_kwargs?: Record<string, unknown>;
 }
 
 /** 线上字段一律当 unknown 收再收窄：后端改一个可选字段不该让前端编译不过。 */
@@ -364,6 +414,7 @@ function applyRunStart(state: RunState, data: RawRunStart): RunState {
     threadId: data.thread_id,
     runId: data.run_id,
     mode: data.mode ?? "plan",
+    thinking: data.thinking ?? "off",
     messages: [...state.messages, { role: "user", text: data.request, rounds: [] }],
   };
 }
@@ -442,21 +493,35 @@ function appendArgs(current: string, delta: string): string {
   return merged.length > ARGS_LIMIT ? `${merged.slice(0, ARGS_LIMIT)}…` : merged;
 }
 
-function newRound(): Round {
-  return { text: "", toolCalls: [], closed: false };
+function newRound(kind: RoundKind): Round {
+  return { kind, text: "", toolCalls: [], closed: false };
 }
 
-/** 让末尾轮处于「可接收增量」的状态：没有轮、或上一轮已关闭，就新开一轮。 */
-function openRound(rounds: Round[]): Round[] {
+/**
+ * 让末尾轮处于「可接收这类增量」的状态：类型对得上、且上一轮还没关闭，就继续追加；
+ * 否则**新开一步**。
+ *
+ * 「类型对得上」这个条件是「思考成为独立一步」的全部实现：模型先来一串 ``thinking`` 增量、
+ * 再来 ``answer`` 增量，第二条的第一段就会因为类型不同而开新的一步，而不是混进同一个缓冲区。
+ */
+function openRound(rounds: Round[], kind: RoundKind): Round[] {
   const last = rounds[rounds.length - 1];
-  return last && !last.closed ? rounds : [...rounds, newRound()];
+  return last && last.kind === kind && !last.closed ? rounds : [...rounds, newRound(kind)];
 }
 
 function appendText(rounds: Round[], text: string): Round[] {
-  const opened = openRound(rounds);
+  return appendTo(rounds, "answer", text);
+}
+
+function appendReasoning(rounds: Round[], reasoning: string): Round[] {
+  return appendTo(rounds, "thinking", reasoning);
+}
+
+function appendTo(rounds: Round[], kind: RoundKind, delta: string): Round[] {
+  const opened = openRound(rounds, kind);
   const last = opened[opened.length - 1];
   const out = [...opened];
-  out[out.length - 1] = { ...last, text: last.text + text };
+  out[out.length - 1] = { ...last, text: last.text + delta };
   return out;
 }
 
@@ -525,7 +590,8 @@ function readToolCalls(chunk: RawChunk): IncomingCall[] {
  * 同一次调用的后续增量块不再重复记。
  */
 function upsertToolCalls(rounds: Round[], incoming: IncomingCall[]): { rounds: Round[]; announced: string[] } {
-  const opened = openRound(rounds);
+  // 工具调用属于「说」那一步——它是模型这次发言的一部分，不是它想的内容。
+  const opened = openRound(rounds, "answer");
   const last = opened[opened.length - 1];
   const byIndex = new Map(last.toolCalls.map((call) => [call.index, call]));
   const announced: string[] = [];
@@ -627,6 +693,16 @@ function applyMessages(state: RunState, data: unknown): RunState {
   const type = str(chunk?.type);
   if (type !== "" && type !== "AIMessageChunk" && type !== "AIMessage") {
     return state;
+  }
+
+  // 思考与正文是**两条并行的流**（模型边说边想，思考整段说完才开始说正文，但都不保证），
+  // 所以各归各的字段，不要按到达顺序混进同一个缓冲区。
+  const reasoning = str((chunk?.additional_kwargs ?? {})["reasoning_content"]);
+  if (reasoning) {
+    messages = patchBubble(messages, key, taskId, (m) => ({
+      ...m,
+      rounds: appendReasoning(m.rounds, reasoning),
+    }));
   }
 
   const text = str(chunk?.content);

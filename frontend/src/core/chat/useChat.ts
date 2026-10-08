@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { API_URL } from "@/core/api/config";
 import { parseSSE } from "@/core/api/stream";
-import { applyFrame, emptyRunState, JournalEntry, RunState, toFrame } from "@/core/chat/runState";
+import {
+  applyFrame,
+  emptyRunState,
+  JournalEntry,
+  RunState,
+  ThinkingLevel,
+  toFrame,
+} from "@/core/chat/runState";
 import {
   cancelRun,
   deleteThread,
@@ -83,7 +90,7 @@ export function useChat() {
   }, [state.threadId]);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, thinking: ThinkingLevel) => {
       const trimmed = text.trim();
       if (!trimmed || streaming) return;
       setError(null);
@@ -100,7 +107,9 @@ export function useChat() {
         const resp = await fetch(`${API_URL}/chat/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: trimmed, thread_id: state.threadId }),
+          // 档位**每次请求都发**，而不是「改的时候通知后端」：后端无状态，一次运行的全部
+          // 输入就该在这一次请求里。
+          body: JSON.stringify({ content: trimmed, thread_id: state.threadId, thinking }),
         });
         if (!resp.ok || !resp.body) {
           throw new Error(`请求失败：HTTP ${resp.status}`);
@@ -170,6 +179,7 @@ export function useChat() {
     runId: state.runId,
     threadId: state.threadId,
     mode: state.mode,
+    thinking: state.thinking,
     timeline: state.timeline,
     threads,
     streaming,

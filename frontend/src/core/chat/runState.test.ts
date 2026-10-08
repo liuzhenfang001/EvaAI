@@ -327,6 +327,120 @@ describe("取消备注", () => {
 });
 
 // --------------------------------------------------------------------------- #
+// 思考内容（T12）
+// --------------------------------------------------------------------------- #
+
+describe("思考内容", () => {
+  /** 带思考的模型消息：后端 `DeepSeekChatModel` 把 `reasoning_content` 捞进了 additional_kwargs。 */
+  function thought(text: string): Frame {
+    return model({ additional_kwargs: { reasoning_content: text } });
+  }
+
+  it("思考自成一步，正文另一步", () => {
+    // 合成一步再在内部拆的话，界面上的「第 N 步」会与实际发生的事对不上。
+    const message = assistant(project([START, thought("先看看"), text("现在是 18:04")]));
+
+    expect(message.rounds.map((r) => [r.kind, r.text])).toEqual([
+      ["thinking", "先看看"],
+      ["answer", "现在是 18:04"],
+    ]);
+  });
+
+  it("同一段思考的增量累加在同一步里", () => {
+    const message = assistant(project([START, thought("我需要"), thought("先查工具")]));
+
+    expect(message.rounds).toHaveLength(1);
+    expect(message.rounds[0].text).toBe("我需要先查工具");
+  });
+
+  it("相邻两轮的思考各占一步，不接成一段", () => {
+    // 中间隔着一次工具往返：第二段思考是新的一步，不是第一段的续写。
+    const message = assistant(
+      project([
+        START,
+        thought("先查"),
+        model({ tool_call_chunks: [{ name: "get_time", args: "{}", id: "c1", index: 0 }] }),
+        toolResult("get_time", "c1"),
+        thought("拿到了"),
+        text("18:04"),
+      ]),
+    );
+
+    expect(message.rounds.map((r) => r.kind)).toEqual(["thinking", "answer", "thinking", "answer"]);
+    expect(message.rounds[0].text).toBe("先查");
+    expect(message.rounds[2].text).toBe("拿到了");
+  });
+
+  it("工具调用归到「说」那一步，不混进思考步", () => {
+    const message = assistant(
+      project([
+        START,
+        thought("该查时间"),
+        model({ tool_call_chunks: [{ name: "get_time", args: "{}", id: "c1", index: 0 }] }),
+      ]),
+    );
+
+    expect(message.rounds[1].kind).toBe("answer");
+    expect(message.rounds[1].toolCalls).toHaveLength(1);
+    expect(message.rounds[0].toolCalls).toHaveLength(0);
+  });
+
+  it("极速档下不产生思考步", () => {
+    const message = assistant(project([START, text("直接答")]));
+
+    expect(message.rounds.map((r) => r.kind)).toEqual(["answer"]);
+  });
+
+  it("只想了没说时，那段思考**不是**最终回复", () => {
+    // 截断 / 超时 / 取消都会留下「有思考、没正文」的一轮。finalText 只看「最后一步没有工具调用」
+    // 的话，会把模型的内心独白当成对用户的答复显示出来——用户会看到一段莫名其妙的自言自语。
+    const message = assistant(project([START, thought("我应该回答 42，可是")]));
+
+    expect(finalText(message)).toBe("");
+  });
+
+  it("思考步算「过程」，与最终回复分得开", () => {
+    const message = assistant(project([START, thought("想想"), text("42")]));
+
+    expect(finalText(message)).toBe("42");
+    expect(processRounds(message).map((r) => r.kind)).toEqual(["thinking"]);
+  });
+
+  it("回放出来的思考与实时一致", () => {
+    const live = assistant(project([START, thought("嗯"), text("答")]));
+    const replayed = assistant(
+      replay([
+        { type: "run_start", run_id: "r0", thread_id: "t0", request: "q", mode: "react" },
+        { type: "messages", task_id: "main", chunk: { type: "AIMessageChunk", additional_kwargs: { reasoning_content: "嗯" } } },
+        { type: "messages", task_id: "main", chunk: { type: "AIMessageChunk", content: "答" } },
+      ]),
+    );
+
+    expect(replayed.rounds).toEqual(live.rounds);
+  });
+});
+
+describe("思考档位", () => {
+  it("从 run_start 读出来", () => {
+    const state = project([["run_start", { run_id: "r0", thread_id: "t0", request: "q", thinking: "max" }]]);
+
+    expect(state.thinking).toBe("max");
+  });
+
+  it("老记录缺这个字段时回退成 off，不是请求层的默认档", () => {
+    // 关键：缺字段的是 T12 之前的运行，那些运行**确实没有思考**。跟着请求层的默认（high）
+    // 走会让旧记录凭空多出一段并不存在的思考——而回放的全部意义就是「与实时逐字一致」。
+    const state = project([START]);
+
+    expect(state.thinking).toBe("off");
+  });
+
+  it("空白状态就是 off", () => {
+    expect(emptyRunState().thinking).toBe("off");
+  });
+});
+
+// --------------------------------------------------------------------------- #
 // 交付文件（T11）
 // --------------------------------------------------------------------------- #
 

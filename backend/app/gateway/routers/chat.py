@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from app.gateway.sse import sse_consumer
 from app.tools.sandbox import ensure_session_dirs
 from evaharness.agents.lead_agent import RunCancellation, run_lead_agent
+from evaharness.agents.options import RunOptions, ThinkingLevel
 from evaharness.agents.plan_exec import run_plan_exec
 from evaharness.agents.plan_exec.events import RunEvent
 from evaharness.journal import RunJournal, journaled, validate_id
@@ -45,6 +46,12 @@ class ChatRequest(BaseModel):
 
     content: str
     thread_id: str | None = None
+    thinking: ThinkingLevel = "high"
+    """思考档位（T12）。缺省 ``high`` 是**语义缺省**：新请求默认开思考。
+
+    注意它和 ``RunStartEvent.thinking`` 的缺省（``off``）**故意不同**——那个是给老 journal 行
+    用的历史回退（那些运行确实没思考）。两者各自的缺省都对着自己那一侧的事实。
+    """
 
 
 class CancelRequest(BaseModel):
@@ -74,14 +81,18 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     # 不取决于模型想没想起来调工具。必须在建图与开跑之前。
     ensure_session_dirs(thread_id)
     run_id = uuid4().hex[:12]
+    # 这一轮的运行参数：建图（模型）与 runner（事件回显）**必须拿同一份**——模型按 A 档跑、
+    # 事件却报 B 档的话，回放与实时就分家了。
+    options = RunOptions(thinking=body.thinking)
     return _stream(
         request,
         run_lead_agent(
             body.content,
-            agent=state.agent_factory.lead(),
+            agent=state.agent_factory.lead(options),
             run_id=run_id,
             thread_id=thread_id,
             cancellation=_make_cancellation(state, run_id),
+            options=options,
         ),
         thread_id,
     )
@@ -121,7 +132,7 @@ async def plan_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     state = request.app.state
     thread_id = _resolve_thread_id(body)
     ensure_session_dirs(thread_id)
-    roles = state.agent_factory.plan_exec()
+    roles = state.agent_factory.plan_exec(RunOptions(thinking=body.thinking))
     return _stream(
         request,
         run_plan_exec(

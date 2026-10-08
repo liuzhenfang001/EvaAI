@@ -14,10 +14,12 @@ import {
   RunSummary,
   TaskStatus,
   ThreadSummary,
+  ThinkingLevel,
   TimelineKind,
   TimelineStep,
   useChat,
 } from "@/core/chat/useChat";
+import { DEFAULT_THINKING, readThinkingLevel, rememberThinkingLevel } from "@/core/chat/preferences";
 import FileCards from "./FileCards";
 import FilePreview from "./FilePreview";
 import Markdown from "./Markdown";
@@ -44,6 +46,14 @@ const STEP_ICON: Record<TimelineKind, string> = {
   result: "↩",
   end: "■",
 };
+
+/** 输入框左边那个档位选择器的选项。取值与后端的 `ThinkingLevel` 一一对应。 */
+const THINKING_OPTIONS: { value: ThinkingLevel; label: string }[] = [
+  { value: "off", label: "极速" },
+  { value: "low", label: "思考·low" },
+  { value: "high", label: "思考·high" },
+  { value: "max", label: "思考·max" },
+];
 
 const EMPTY_STEP: TimelineStep[] = [];
 
@@ -224,10 +234,13 @@ function TaskPanel({
 // 助手气泡：多轮过程折叠 + 最终回复
 // --------------------------------------------------------------------------- #
 
-/** 一轮的收起摘要：优先说调了什么，没有工具就说「思考」。 */
+/** 一步的收起摘要：思考步直说「思考」，其余优先说调了什么。 */
 function summarizeRound(round: Round): string {
+  if (round.kind === "thinking") {
+    return "思考";
+  }
   const names = round.toolCalls.map((call) => call.name || "工具");
-  return names.length === 0 ? "思考" : `调用 ${names.join("、")}`;
+  return names.length === 0 ? "回答" : `调用 ${names.join("、")}`;
 }
 
 function RoundBlock({
@@ -242,7 +255,7 @@ function RoundBlock({
   onToggle: () => void;
 }) {
   return (
-    <div className={`round ${open ? "open" : "closed"}`}>
+    <div className={`round ${round.kind} ${open ? "open" : "closed"}`}>
       {/* 整行都是按钮：折叠的命中区域够大，键盘与读屏也用得上。 */}
       <button className="round-head" type="button" onClick={onToggle} aria-expanded={open}>
         <span className="round-caret">{open ? "▾" : "▸"}</span>
@@ -251,7 +264,11 @@ function RoundBlock({
       </button>
       {open && (
         <div className="round-body">
-          {round.text && <Markdown text={round.text} />}
+          {/* 思考按**原样文本**渲染，不走 Markdown：它是半成品的思路，换行有意义，
+              而 Markdown 会把单个换行折成空格、把思路揉成一坨。回答才需要排版。
+              外层 `.round-body` 的 pre-wrap 正是为它准备的。 */}
+          {round.text &&
+            (round.kind === "thinking" ? <div>{round.text}</div> : <Markdown text={round.text} />)}
           {/* 展开时把这一轮调了什么、带什么参数都摊开——收起时只留摘要行里的名字。 */}
           <ul className="round-tools">
             {round.toolCalls.map((call) => (
@@ -354,6 +371,12 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [panelOpen, setPanelOpen] = useState(false);
   const autoShown = useRef(false);
+  // 先给默认档、挂载后再读 localStorage：直接拿 `readThinkingLevel` 当初始值会让服务端
+  // 渲染出的 HTML 与客户端读到的不一致（localStorage 只有浏览器有），换来一条 hydration 警告。
+  const [thinking, setThinking] = useState<ThinkingLevel>(DEFAULT_THINKING);
+  useEffect(() => {
+    setThinking(readThinkingLevel());
+  }, []);
   // 正在预览哪个交付文件。**放组件本地 state 而不是 reducer**——与轮次折叠同一个理由
   // （见 ProcessBlock）：reducer 是「事件 → 状态」的纯投影、实时与回放共用，把「我在看
   // 哪个文件」塞进去会污染回放。也因此它不持久化，刷新后面板关掉。
@@ -412,7 +435,7 @@ export default function Home() {
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!input.trim()) return;
-    send(input);
+    send(input, thinking);
     setInput("");
   };
 
@@ -421,6 +444,11 @@ export default function Home() {
     if (threadId) {
       setPreview({ threadId, file });
     }
+  };
+
+  const chooseThinking = (level: ThinkingLevel) => {
+    setThinking(level);
+    rememberThinkingLevel(level);
   };
 
   const onRename = (thread: ThreadSummary) => {
@@ -505,6 +533,22 @@ export default function Home() {
         {error && <div className="error">⚠️ {error}</div>}
 
         <form className="input-row" onSubmit={onSubmit}>
+          {/* 档位选择器放在输入框**左边**：它修饰的是「这条消息怎么答」，紧挨着输入框比
+              塞进设置页更容易被想起来用。运行中禁用——这一轮的档位在建图时就定死了。 */}
+          <select
+            className="thinking-picker"
+            value={thinking}
+            onChange={(e) => chooseThinking(e.target.value as ThinkingLevel)}
+            disabled={streaming}
+            title="思考深度"
+            aria-label="思考深度"
+          >
+            {THINKING_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}

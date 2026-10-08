@@ -121,5 +121,8 @@ tools:
 - [x] **T9**（#9）agent 每请求构建：消除单例中间件的并发洞，并把「每请求配置」的门打开（ADR-0011）
 - [x] **T10**（#10）助手回复渲染 Markdown：react-markdown + GFM + 代码高亮（ADR-0014）
 - [x] **T11**（#11）文件卡片与预览：`present_files` 工具 + 下载路由 + 右侧预览面板（ADR-0015）
+- [x] **T12**（#12）思考模式与动态思考深度：DeepSeek 适配器 + 每请求参数契约 + 档位选择器（ADR-0016）
+
+**三期范围**（2026-10-08 起）见 [Issue #13](https://github.com/liuzhenfang001/EvaAI/issues/13)：docker 沙箱、skill 加载机制、MCP、Rag（+ llm wiki）。
 
 已完成的水平里程碑：M0 脚手架 + 边界测试 + 配置加载 + 反射加载；M1 模型工厂 + ReAct 执行器（LangChain `create_agent` + 6 个硬核中间件）。

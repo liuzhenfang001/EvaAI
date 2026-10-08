@@ -235,6 +235,19 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* ---- 思考步（T12）---- */
+
+/* 思考是**独立的一步**，与「调用 X」那些步骤共用 .round 那一整套（折叠、光标、竖线），
+   所以这里只补一处：思考正文比过程正文再暗一档。它是半成品的思路，比「他说了什么」更靠后。
+   换行由 .round-body 的 pre-wrap 保留——那正是思考需要的。 */
+.round.thinking .round-body {
+  color: #6b7178;
+}
+
+.round.thinking .round-summary {
+  color: #5b6068;
+}
+
 /* 正在打字的那一轮给一个光标，表示「还没说完」。 */
 .process.live .round.open .round-body::after {
   content: "▍";
@@ -604,6 +617,29 @@ body {
 .input-row input:focus {
   outline: none;
   border-color: #2563eb;
+}
+
+/* 档位选择器：与输入框同一排，不抢视觉（用户大多数时候不会去动它）。 */
+.thinking-picker {
+  flex: none;
+  padding: 0 10px;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  background: #1c1f26;
+  color: #8a8f98;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.thinking-picker:hover:not(:disabled) {
+  color: #c9cdd4;
+  border-color: #3a4150;
+}
+
+.thinking-picker:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .input-row button {

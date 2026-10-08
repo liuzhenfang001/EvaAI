@@ -3,8 +3,9 @@
 import pytest
 from langchain_openai import ChatOpenAI
 
+from evaharness.agents.options import RunOptions
 from evaharness.config.app_config import AppConfig, ModelConfig
-from evaharness.models.factory import create_chat_model
+from evaharness.models.factory import create_chat_model, thinking_model_kwargs
 
 
 def _cfg(*model_kwargs):
@@ -50,3 +51,50 @@ def test_create_chat_model_does_not_leak_profile_name():
     cfg = _cfg(dict(name="a", model="m-a", api_key="sk-test"))
     model = create_chat_model(cfg, "a")
     assert model.name != "a"
+
+
+# --------------------------------------------------------------------------- #
+# 思考档位 → 模型构造参数
+# --------------------------------------------------------------------------- #
+
+
+def test_thinking_off_turns_thinking_off():
+    kwargs = thinking_model_kwargs("off")
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert kwargs["reasoning_effort"] == "minimal"
+
+
+@pytest.mark.parametrize("level", ["low", "high", "max"])
+def test_each_thinking_level_turns_thinking_on_with_that_effort(level):
+    """三档的取值与 DeepSeek 认的力度**完全一致**——传一个它不认的值只会换来 400。"""
+    kwargs = thinking_model_kwargs(level)
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert kwargs["reasoning_effort"] == level
+
+
+def test_options_reach_the_model_constructor():
+    cfg = _cfg(dict(name="a", model="m-a", api_key="sk-test"))
+    model = create_chat_model(cfg, "a", options=RunOptions(thinking="max"))
+    assert model.extra_body == {"thinking": {"type": "enabled"}}
+    assert model.reasoning_effort == "max"
+
+
+def test_a_profile_extra_body_survives_the_run_options():
+    """**这条钉住一个真写出来过的 bug**。
+
+    ``settings.update(kwargs)`` 是浅的：运行参数里的 ``extra_body`` 会把 profile 里配好的
+    整个冲掉，症状是「一开思考，之前配的厂商参数就没了」——而且不报错。
+    """
+    cfg = _cfg(dict(name="a", model="m-a", api_key="sk-test", extra_body={"top_k": 5}))
+    model = create_chat_model(cfg, "a", options=RunOptions(thinking="high"))
+
+    assert model.extra_body["top_k"] == 5, "profile 里的其它 extra_body 键被冲掉了"
+    assert model.extra_body["thinking"] == {"type": "enabled"}
+
+
+def test_without_options_nothing_is_added():
+    """不带运行参数时行为与老调用方**完全一致**——封存的 Plan-Exec 路由与所有测试都靠这条。"""
+    cfg = _cfg(dict(name="a", model="m-a", api_key="sk-test"))
+    model = create_chat_model(cfg, "a")
+    assert model.extra_body is None
+    assert model.reasoning_effort is None

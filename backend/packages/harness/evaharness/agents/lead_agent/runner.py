@@ -47,6 +47,7 @@ from pydantic import ValidationError
 from evaharness.agents.lead_agent.agent import LEAD_LANE, LeadContext
 from evaharness.agents.lead_agent.custom_events import PRESENT_FILES_KIND
 from evaharness.agents.messages import final_text
+from evaharness.agents.options import RunOptions
 from evaharness.agents.plan_exec.events import (
     FilesPresentedEvent,
     MessagesEvent,
@@ -88,6 +89,7 @@ async def run_lead_agent(
     run_id: str | None = None,
     thread_id: str | None = None,
     cancellation: RunCancellation | None = None,
+    options: RunOptions | None = None,
 ) -> AsyncIterator[RunEvent]:
     """跑一轮主 Agent。
 
@@ -117,6 +119,8 @@ async def run_lead_agent(
         request=request,
         started_at=datetime.now(UTC).isoformat(),
         mode="react",
+        # 回显这一轮用的是哪档思考：回放时前端只能从这里学到，不能靠实时内存。
+        thinking=options.thinking if options is not None else "off",
     )
 
     coordinate = lead_thread_id(thread_id)

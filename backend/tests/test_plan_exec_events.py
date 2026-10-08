@@ -84,6 +84,32 @@ def test_run_start_rejects_an_unknown_mode():
         RunStartEvent(run_id="r", thread_id="t", request="q", started_at="s", mode="nope")
 
 
+def test_run_start_thinking_defaults_to_off_for_pre_t12_journals():
+    """``thinking`` 的缺省是**历史回退**，不是语义缺省。
+
+    老 journal 行里没有这个字段，而那些运行确实没有思考。**绝不能**跟着请求层的默认档
+    （``high``）走——那样旧记录会被凭空加上一段并不存在的思考，回放与实时就分家了。
+    """
+    dumped, parsed = _roundtrip(
+        RunStartEvent(run_id="r", thread_id="t", request="q", started_at="2026-09-29T10:00:00+00:00")
+    )
+    assert dumped["thinking"] == "off"
+    assert parsed.thinking == "off"
+
+
+@pytest.mark.parametrize("level", ["off", "low", "high", "max"])
+def test_run_start_carries_the_thinking_level(level):
+    _, parsed = _roundtrip(
+        RunStartEvent(run_id="r", thread_id="t", request="q", started_at="s", thinking=level)
+    )
+    assert parsed.thinking == level
+
+
+def test_run_start_rejects_an_unknown_thinking_level():
+    with pytest.raises(ValidationError):
+        RunStartEvent(run_id="r", thread_id="t", request="q", started_at="s", thinking="turbo")
+
+
 def test_run_end_event_roundtrips():
     """``run_end`` 是 lead 路径的终态：它没有 ``task_end``，message 桶里必须有个收尾。"""
     event = RunEndEvent(status="completed", output="现在 18:04")

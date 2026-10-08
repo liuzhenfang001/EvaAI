@@ -25,6 +25,7 @@ from app.gateway.agents import AgentFactory
 from app.gateway.routers import chat
 from app.gateway.run_registry import RunRegistry
 from evaharness.agents.lead_agent import LEAD_LANE
+from evaharness.agents.options import RunOptions
 from evaharness.agents.plan_exec.schemas import Plan, PlanTask, ReplanDecision
 from evaharness.journal.stores import MemoryJournalStore
 
@@ -49,9 +50,13 @@ def _parse(frame: str):
     return event, data
 
 
-def _fake_model(name: str | None = None) -> BaseChatModel:  # noqa: ARG001
-    """一个模型同时服务两条路径：主 Agent 要文本，planner / replanner 要结构化输出。"""
-    del name
+def _fake_model(name: str | None = None, options: Any = None) -> BaseChatModel:  # noqa: ARG001
+    """一个模型同时服务两条路径：主 Agent 要文本，planner / replanner 要结构化输出。
+
+    第二个参数是运行参数（思考档位等）——这一层不关心它，但签名要接得住：路由会把每次
+    请求的档位一路传下来。
+    """
+    del name, options
     return RoutingStructuredFake(
         messages=itertools.cycle([AIMessage(content="现在是 18:04")]),
         plan=Plan(tasks=[PlanTask(id="t1", description="查时间")]),
@@ -69,15 +74,19 @@ class _RecordingFactory(AgentFactory):
         super().__init__(*args, **kwargs)
         self.leads: list = []
         self.plans: list = []
+        self.lead_options: list = []
+        self.plan_options: list = []
 
-    def lead(self):  # noqa: ANN201
-        graph = super().lead()
+    def lead(self, options=None):  # noqa: ANN001, ANN201
+        graph = super().lead(options)
         self.leads.append(graph)
+        self.lead_options.append(options)
         return graph
 
-    def plan_exec(self):  # noqa: ANN201
-        roles = super().plan_exec()
+    def plan_exec(self, options=None):  # noqa: ANN001, ANN201
+        roles = super().plan_exec(options)
         self.plans.append(roles)
+        self.plan_options.append(options)
         return roles
 
 
@@ -138,6 +147,35 @@ async def test_the_default_route_declares_react_mode():
     _, data = frames[0]
     assert data["mode"] == "react"
     assert data["thread_id"] == THREAD
+
+
+@pytest.mark.parametrize("level", ["off", "low", "high", "max"])
+@pytest.mark.asyncio
+async def test_the_request_thinking_reaches_the_model_builder(level):
+    """请求体里选的档位必须走到**建模型**那一步——否则界面上选了也是白选。"""
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        frames = await _post(client, "/chat/stream", "现在几点？", thinking=level)
+
+    assert client.factory.lead_options == [RunOptions(thinking=level)]
+    assert frames[0][1]["thinking"] == level, "事件回显的要与请求一致，否则回放与实时分家"
+
+
+@pytest.mark.asyncio
+async def test_thinking_defaults_to_high_when_the_request_omits_it():
+    """面向用户的默认档是 ``high``（与 ``RunStartEvent`` 那个历史回退的 ``off`` 是两回事）。"""
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        frames = await _post(client, "/chat/stream", "现在几点？")
+
+    assert client.factory.lead_options == [RunOptions(thinking="high")]
+    assert frames[0][1]["thinking"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_thinking_level_is_rejected():
+    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+        resp = await client.post("/chat/stream", json={"content": "你好", "thinking": "turbo"})
+
+    assert resp.status_code == 422, "不认的档位该在进模型之前就被挡掉"
 
 
 @pytest.mark.asyncio

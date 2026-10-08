@@ -40,6 +40,7 @@ from evaharness.agents.lead_agent import (
     make_subagent_graph,
     make_task_tool,
 )
+from evaharness.agents.options import RunOptions
 from evaharness.agents.plan_exec import (
     Planner,
     Replanner,
@@ -53,8 +54,13 @@ from evaharness.models.factory import create_chat_model
 
 __all__ = ["AgentFactory", "PlanRoles"]
 
-ModelFactory = Callable[[str | None], BaseChatModel]
-"""模型构造接缝：吃 profile 名（``None`` = 主 profile），返回模型实例。"""
+ModelFactory = Callable[[str | None, "RunOptions | None"], BaseChatModel]
+"""模型构造接缝：吃 profile 名（``None`` = 主 profile）与这次运行的参数，返回模型实例。
+
+第二个参数是 ADR-0011 预留的那个位置——「每请求参数从哪来」现在有了契约
+（:class:`~evaharness.agents.options.RunOptions`）。**摘要模型传 ``None``**：压缩是内部辅助
+调用，不该继承用户这一轮选的思考档位。
+"""
 
 
 def _subagent_tools(tools: Sequence[Any]) -> list[Any]:
@@ -122,14 +128,17 @@ class AgentFactory:
         self.checkpointer = checkpointer
         self._model_factory: ModelFactory = model_factory if model_factory is not None else self._create_model
 
-    def lead(self) -> CompiledStateGraph:
+    def lead(self, options: RunOptions | None = None) -> CompiledStateGraph:
         """建主 Agent 的图，连带它专属的子 agent 图与 ``task`` 工具。
 
         子 agent 图**必须跟着一起重建**：``make_task_tool`` 把子图闭包进工具、工具再进
         主图。只重建主图的话，子图里那批中间件实例仍然长命——子 agent 的桶继续无界
         增长，并发污染也照样发生。
+
+        ``options`` 是这次运行的参数（思考档位等）。**一个模型实例同时喂给子图与主图**，
+        所以子 agent 自动跟随同一份参数——将来若要拆开，记得两边都要动。
         """
-        model = self._model_factory(None)
+        model = self._model_factory(None, options)
         subagent = make_subagent_graph(
             model,
             _subagent_tools(self.tools),
@@ -144,13 +153,14 @@ class AgentFactory:
             checkpointer=self.checkpointer,
         )
 
-    def plan_exec(self) -> PlanRoles:
+    def plan_exec(self, options: RunOptions | None = None) -> PlanRoles:
         """建 Plan-Exec 的三件套（封存路径）。
 
         与 :meth:`lead` 一样是每请求一次：执行单元在构造时建图并闭包进 ``execute``，
-        所以「重建」只能通过重建执行单元本身完成。
+        所以「重建」只能通过重建执行单元本身完成。``options`` 同样一个实例喂给三者，
+        与主路径保持同一口径。
         """
-        model = self._model_factory(None)
+        model = self._model_factory(None, options)
         return PlanRoles(
             planner=make_planner(model, system_prompt=PLANNER_PROMPT),
             executor=make_react_executor(
@@ -174,7 +184,9 @@ class AgentFactory:
         summarization = self.app_config.agent.summarization
         summary_model = None
         if summarization.enabled and summarization.model:
-            summary_model = self._model_factory(summarization.model)
+            # 运行参数传 None：压缩是内部辅助调用，让它跟着用户这轮选的思考档位跑没有意义，
+            # 只会让每一次「压一下上下文」都变成一次昂贵的思考。
+            summary_model = self._model_factory(summarization.model, None)
         return build_lead_middlewares(
             model,
             summarization=summarization,
@@ -182,6 +194,6 @@ class AgentFactory:
             max_steps=self.app_config.agent.max_steps,
         )
 
-    def _create_model(self, name: str | None) -> BaseChatModel:
+    def _create_model(self, name: str | None, options: RunOptions | None = None) -> BaseChatModel:
         """缺省模型构造：按 profile 名从配置里建一个（``None`` = 主 profile）。"""
-        return create_chat_model(self.app_config, name)
+        return create_chat_model(self.app_config, name, options=options)

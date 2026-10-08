@@ -20,18 +20,29 @@ from plan_exec_fakes import CallRecordingFake, ToolCapableFake, collect, fake_ap
 
 from app.gateway.agents import AgentFactory
 from evaharness.agents.lead_agent import TASK_TOOL_NAME, run_lead_agent
+from evaharness.agents.options import RunOptions
 from evaharness.agents.middlewares import build_default_middlewares
 
 ModelFactory = Callable[[str | None], ToolCapableFake]
 
 
-def _answering(*answers: str, names: list[str | None] | None = None) -> ModelFactory:
-    """假模型的构造接缝；给了 ``names`` 就顺带记下每次用的是哪个 profile。"""
+def _answering(
+    *answers: str,
+    names: list[str | None] | None = None,
+    options: list[RunOptions | None] | None = None,
+) -> ModelFactory:
+    """假模型的构造接缝。
+
+    ``names`` / ``options`` 是记录用的：前者记用了哪个 profile，后者记每次运行带的参数
+    ——「每请求参数真的传到了模型构造」这条就靠它断言。
+    """
     texts = list(answers) or ["好的。"]
 
-    def build(name: str | None) -> ToolCapableFake:
+    def build(name: str | None, run_options: RunOptions | None = None) -> ToolCapableFake:
         if names is not None:
             names.append(name)
+        if options is not None:
+            options.append(run_options)
         return ToolCapableFake(messages=itertools.cycle([AIMessage(content=text) for text in texts]))
 
     return build
@@ -166,6 +177,52 @@ def test_the_summary_model_is_built_only_when_summarization_is_on():
 
 
 # --------------------------------------------------------------------------- #
+# 每请求参数（ADR-0011 预留的那个位置）
+# --------------------------------------------------------------------------- #
+
+
+def test_run_options_reach_the_model_factory():
+    """「每请求参数真的传到了模型构造」——这是本片新增的那条链路的**唯一**断言点。"""
+    seen: list[RunOptions | None] = []
+    factory = _factory(model_factory=_answering("好的。", options=seen))
+
+    factory.lead(RunOptions(thinking="max"))
+
+    assert seen == [RunOptions(thinking="max")]
+
+
+def test_no_options_still_calls_the_factory_with_none():
+    """不带参数时传的是 ``None`` 而不是「随便给个默认档」——老调用方的行为要一字不变。"""
+    seen: list[RunOptions | None] = []
+    factory = _factory(model_factory=_answering("好的。", options=seen))
+
+    factory.lead()
+
+    assert seen == [None]
+
+
+def test_the_summary_model_does_not_inherit_the_run_options():
+    """压缩是内部辅助调用，不该跟着用户这轮选的思考档位跑——否则每次压上下文都变成一次昂贵思考。"""
+    seen: list[RunOptions | None] = []
+    factory = _factory(
+        enabled=True, model="cheap", model_factory=_answering("好的。", options=seen)
+    )
+
+    factory.lead(RunOptions(thinking="max"))
+
+    assert seen == [RunOptions(thinking="max"), None], "主模型带参数、摘要模型不带"
+
+
+def test_plan_exec_also_receives_the_run_options():
+    seen: list[RunOptions | None] = []
+    factory = _factory(model_factory=_answering("好的。", options=seen))
+
+    factory.plan_exec(RunOptions(thinking="low"))
+
+    assert seen == [RunOptions(thinking="low")]
+
+
+# --------------------------------------------------------------------------- #
 # 记忆不随重建丢失
 # --------------------------------------------------------------------------- #
 
@@ -179,7 +236,7 @@ async def test_memory_survives_a_rebuild():
     """
     saver = InMemorySaver()
     recorder = CallRecordingFake(messages=iter([AIMessage(content="好的，张三。"), AIMessage(content="你叫张三。")]))
-    factory = _factory(checkpointer=saver, model_factory=lambda _name: recorder)
+    factory = _factory(checkpointer=saver, model_factory=lambda _name, _options=None: recorder)
 
     await collect(run_lead_agent("我叫张三", agent=factory.lead(), thread_id="th-1"))
     await collect(run_lead_agent("我叫什么", agent=factory.lead(), thread_id="th-1"))

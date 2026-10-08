@@ -31,6 +31,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
+from evaharness.agents.options import ThinkingLevel
 from evaharness.agents.plan_exec.schemas import PlanTask, TaskResult, TerminalTaskStatus
 
 EventCategory = Literal["message", "trace"]
@@ -71,6 +72,15 @@ class RunStartEvent(_MessageEvent):
     缺省 ``"plan"`` 是**历史回退**而不是语义缺省：T7 期间写下的 journal 行里没有这个
     字段，而那些行确实都是 Plan-Exec 写的。前端靠它决定署名、面板文案与「规划中…」
     占位，回放也能从 journal 学到同一个值——所以它必须随事件落盘。
+    """
+
+    thinking: ThinkingLevel = "off"
+    """这一轮的思考档位（T12）。
+
+    缺省 ``"off"`` 同样是**历史回退**而不是语义缺省：老 journal 行里没有这个字段，而那些
+    运行确实没有思考（当时用的模型别名隐含不带思考）。回放时前端要靠它决定渲不渲染思考区，
+    而请求层的默认档是 ``high``——所以这个缺省**必须**是 ``off``，跟着请求层走会让旧记录
+    凭空多出一段并不存在的思考。
     """
 
 
