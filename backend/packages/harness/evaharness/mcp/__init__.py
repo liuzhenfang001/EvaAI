@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from evaharness.mcp.assembly import PROBE_TIMEOUT, AdapterFactory, open_mcp_tools, probe_mcp_servers
+from evaharness.mcp.assembly import PROBE_TIMEOUT, AdapterFactory, load_mcp_tools, open_mcp_tools
 from evaharness.mcp.client import make_adapter, make_client
 from evaharness.mcp.naming import MCP_TOOL_PREFIX, mcp_tool_name, prefix_tool
 
@@ -19,10 +19,10 @@ __all__ = [
     "MCP_TOOL_PREFIX",
     "PROBE_TIMEOUT",
     "AdapterFactory",
+    "load_mcp_tools",
     "make_adapter",
     "make_client",
     "mcp_tool_name",
     "open_mcp_tools",
     "prefix_tool",
-    "probe_mcp_servers",
 ]

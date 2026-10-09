@@ -1,79 +1,71 @@
-"""一次运行里的 MCP 工具：开连接 → 拉工具 → 交给建图 → 整轮用完再关。
+"""MCP 工具的**启动期装载**：把 `extensions_config.json` 里的 server 变成能用的工具。
 
-**连接的作用域 = 这个 context 的作用域 = 一次运行**（决策 #3）。这就是它必须被包在
-请求路径那个 run 生成器里的原因：MCP 工具要在 ``create_agent(tools=...)`` **之前**拿到手，
-而连接要活到最后一帧。两个约束一夹，落点只剩一个（ADR-0017）。
+**连接只在启动期发生一次**。之后每次运行都用启动期拿到的这份工具清单，一个字节的 I/O 都没有；
+模型真的调某个工具时，工具内部才自己建连（`as_langchain_tool` 的 `call_tool`）。
+
+为什么能这么分：工具在模型眼里的样子（`name` / `description` / `args_schema`）是**数据**——建图时
+随 `bind_tools` 发出去，**不需要连接**；连接只在**执行**时才需要。实测（2026-10-10）：连接关掉之后
+工具对象照样带着完整 schema，5 路并发调用全部成功，进程数也不累积。
+
+代价照实说：**没连上的 server，这次进程生命周期内就不会有它的工具**（想让它生效要重启）；而连上了
+之后又挂掉的 server，工具**仍在列表里**，报错会发生在**调用那一刻**（由
+:class:`~evaharness.agents.middlewares.tool_error_handling.ToolErrorHandlingMiddleware` 转成一条
+`status="error"` 的工具消息给模型看）。
 
 放在业务层而不是 harness：**「连哪些 server」是业务决定**（写在 `extensions_config.json` 里），
-`harness` 只提供「把声明变成工具」的机制（:mod:`evaharness.mcp`）。
+harness 只提供「把声明变成工具」的机制（:mod:`evaharness.mcp`）。
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
-from typing import Any
+from collections.abc import Collection, Mapping
 
 from langchain_core.tools import BaseTool
 
-from evaharness.agents.lead_agent import TASK_TOOL_NAME
 from evaharness.config.extensions_config import McpServerConfig
-from evaharness.mcp import AdapterFactory, make_adapter, open_mcp_tools
+from evaharness.mcp import AdapterFactory, make_adapter
+from evaharness.mcp import load_mcp_tools as _fetch_mcp_tools
 
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
-async def mcp_tools_for_run(
-    state: Any,
+async def load_mcp_tools(
+    servers: Mapping[str, McpServerConfig],
     *,
+    business_tools: Collection[BaseTool],
     adapter_factory: AdapterFactory = make_adapter,
-) -> AsyncIterator[list[BaseTool]]:
-    """这次运行可用的 MCP 工具（已改名、已去掉与既有工具撞名的）。
+) -> list[BaseTool]:
+    """连一次、取回全部工具、丢掉与既有工具撞名的那些，返回**能用的**那批。
 
-    没配任何 server 时直接产出空表——**不建连接、不走库**，所以「没配 MCP」的运行路径与 T12
-    之前完全一致（少一层开销，也少一处可能出错的代码）。
-
-    连不上的 server 由 :func:`~evaharness.mcp.assembly.open_mcp_tools` 跳过并记警告：这次运行
-    只是没有它的工具，不是这次运行失败。
+    调用方（lifespan）把它接到 `AgentFactory` 的工具表上——从那一刻起，MCP 工具与业务工具在
+    建图眼里没有区别，于是主图、子图、Plan-Exec 执行单元**自动**都拿到它们，不需要三条路径各写
+    一遍（T13 的 `extra_tools` 就是为那个「每请求才有」的语义存在的，现在 MCP 工具是启动期常量，
+    那一层就没必要了）。
     """
-    servers = _configured_servers(state)
-    if not servers:
-        yield []
-        return
-
-    async with open_mcp_tools(servers, adapter_factory=adapter_factory) as tools:
-        yield _drop_collisions(tools, taken=_taken_names(state))
-
-
-def _configured_servers(state: Any) -> Mapping[str, McpServerConfig]:
-    """从 `app.state` 取 server 声明；没挂（测试里的假 state）就当没配。"""
-    extensions = getattr(state, "extensions_config", None)
-    return getattr(extensions, "mcp_servers", None) or {}
-
-
-def _taken_names(state: Any) -> set[str]:
-    """已经被占掉的名字：业务工具 + 子 agent 派发工具 ``task``。"""
-    factory = getattr(state, "agent_factory", None)
-    business = getattr(factory, "tools", None) or []
-    return {getattr(tool, "name", "") for tool in business} | {TASK_TOOL_NAME}
+    tools = await _fetch_mcp_tools(servers, adapter_factory=adapter_factory)
+    return _drop_collisions(tools, taken={tool.name for tool in business_tools})
 
 
 def _drop_collisions(tools: list[BaseTool], taken: set[str]) -> list[BaseTool]:
-    """撞名的 MCP 工具**丢掉并记日志**，不抛。
+    """与既有工具**逐字同名**的 MCP 工具：丢掉并记日志，不抛。
 
-    为什么与启动期那套「拒绝启动」不同：`mcp__<server>__<tool>` 是个确定性前缀，真与业务工具
-    或 `task` 撞上只可能是我们自己的 bug；而按 MCP 一贯的取向（决策 #2 / #11 / #12），外部扩展
-    的小故障不该把用户这一轮变成失败。丢掉的那一个会在日志里点名，不是静默的。
+    **真正挡住撞名的是前缀，不是这里**：server 提供一个叫 `read_file` 的工具，装配会把它变成
+    `mcp__fs__read_file`，压根碰不到我们的 `read_file`；同理它也**永远不可能等于** `task`
+    （带前缀的名字不可能是裸名）。实测这不是假想——官方 filesystem server 就提供 `read_file` /
+    `write_file`，正是我们的工具名。
+
+    所以这里挡的是一个**残留角落**：业务工具自己就叫 `mcp__fs__read_file`（配置里手写的）。它不
+    可能发生，但一旦发生，症状是模型收到两份同名 schema、调用落到哪一个不确定——正是 ADR-0011
+    记的 `create_agent` 静默盲区。守它的成本是几行，代价不对称。
     """
     kept: list[BaseTool] = []
     for tool in tools:
         if tool.name in taken:
-            logger.warning("MCP 工具 %r 与已有工具撞名，已丢弃", tool.name)
+            logger.warning("MCP 工具 %r 与已有工具逐字同名，已丢弃", tool.name)
             continue
         kept.append(tool)
     return kept
 
 
-__all__ = ["mcp_tools_for_run"]
+__all__ = ["load_mcp_tools"]

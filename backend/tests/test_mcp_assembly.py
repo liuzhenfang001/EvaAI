@@ -13,7 +13,7 @@ import pytest
 from langchain_core.tools import BaseTool, tool
 
 from evaharness.config.extensions_config import McpServerConfig
-from evaharness.mcp import mcp_tool_name, open_mcp_tools, prefix_tool, probe_mcp_servers
+from evaharness.mcp import load_mcp_tools, mcp_tool_name, open_mcp_tools, prefix_tool
 
 
 @tool
@@ -169,27 +169,36 @@ class TestOpenMcpTools:
         assert log[-1] == "fs:exit"
 
 
-class TestProbe:
+class TestLoadMcpTools:
+    """启动期装载：连一次、拿回工具、**立刻断开**。
+
+    之后每次运行都用这份清单（运行期零 I/O），模型真的调某个工具时工具内部才自己建连。
+    """
+
     pytestmark = pytest.mark.asyncio
 
-    async def test_a_healthy_server_is_reported(self, caplog):
-        """成功的探测记 INFO，失败记 WARNING——所以这条要显式抬到 INFO 才看得见。"""
+    async def test_tools_come_back_prefixed_and_the_connection_is_released(self, caplog):
+        """成功的装载记 INFO，失败记 WARNING——所以这条要显式抬到 INFO 才看得见。"""
         caplog.set_level(logging.INFO)
         log: list[str] = []
-        await probe_mcp_servers({"fs": stdio("fs")}, adapter_factory=factory(log))
-        assert log == ["fs:enter", "fs:list(bypass)", "fs:exit"]
+        tools = await load_mcp_tools({"fs": stdio("fs")}, adapter_factory=factory(log))
+
+        assert sorted(t.name for t in tools) == ["mcp__fs__list_directory", "mcp__fs__read_file"]
+        assert log == ["fs:enter", "fs:list(bypass)", "fs:exit"], "拿完工具就该把连接还回去"
         assert "fs" in caplog.text
 
     async def test_a_broken_server_never_raises(self, caplog):
-        """决策 #11：探测失败只警告，不拦住启动。"""
+        """连不上只警告、不拦启动——它只是「这次进程生命周期内没有它的工具」。"""
         log: list[str] = []
         make = factory(log, bad={"fail_on_enter": True})
-        await probe_mcp_servers({"bad": stdio("bad"), "ok": stdio("ok")}, adapter_factory=make)
+        tools = await load_mcp_tools({"bad": stdio("bad"), "ok": stdio("ok")}, adapter_factory=make)
+
+        assert [t.name for t in tools] == ["mcp__ok__list_directory", "mcp__ok__read_file"]
         assert "bad" in caplog.text
         assert log == ["bad:enter", "ok:enter", "ok:list(bypass)", "ok:exit"]
 
     async def test_a_hanging_server_times_out_instead_of_hanging_startup(self, caplog):
-        """stdio 没有默认读超时（langchain#40472 OPEN），所以探测自带一个外层的硬超时。"""
+        """stdio 没有默认读超时（langchain#40472 OPEN），所以装载自带一个外层的硬超时。"""
         log: list[str] = []
 
         class Hanging(FakeAdapter):
@@ -197,9 +206,18 @@ class TestProbe:
                 await asyncio.sleep(30)
                 return []
 
-        await probe_mcp_servers(
+        tools = await load_mcp_tools(
             {"slow": stdio("slow")},
             timeout=0.05,
             adapter_factory=lambda server: Hanging("slow", log),
         )
+
+        assert tools == []
         assert "slow" in caplog.text
+        # 超时的警告必须**自己说清是超时**：`asyncio.timeout` 抛的 TimeoutError 的 str() 是空的，
+        # 不单独接住的话日志只有一句「TimeoutError」，查的人根本不知道是慢还是配错了。
+        assert "超时" in caplog.text
+
+    async def test_no_servers_means_no_work_at_all(self):
+        tools = await load_mcp_tools({})
+        assert tools == []

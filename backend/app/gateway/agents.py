@@ -51,6 +51,7 @@ from evaharness.agents.plan_exec import (
 )
 from evaharness.config.app_config import AppConfig
 from evaharness.models.factory import create_chat_model
+from evaharness.skills import Skill, render_skills_section
 
 __all__ = ["AgentFactory", "PlanRoles"]
 
@@ -108,6 +109,7 @@ class AgentFactory:
         checkpointer: Any | None = None,
         *,
         model_factory: ModelFactory | None = None,
+        skills: Sequence[Skill] = (),
     ) -> None:
         """保存建图参数，不做任何构建。
 
@@ -126,14 +128,24 @@ class AgentFactory:
         self.app_config = app_config
         self.tools = list(tools)
         self.checkpointer = checkpointer
+        # 技能清单**渲染一次**存下来：它的内容与这次构建绑定，而 `_prompt` 会被调用三次
+        # （主图 / 子图 / 执行单元）。空技能时它是 `""`，于是 `_prompt` 原样返回 base。
+        self._skill_section = render_skills_section(list(skills))
         self._model_factory: ModelFactory = model_factory if model_factory is not None else self._create_model
 
-    def lead(
-        self,
-        options: RunOptions | None = None,
-        *,
-        extra_tools: Sequence[Any] = (),
-    ) -> CompiledStateGraph:
+    def _prompt(self, base: str) -> str:
+        """把技能清单接到基础提示词后面——**空清单时逐字节原样返回**。
+
+        「空时必须一字不差」不是洁癖：它拼在 `system_prompt` 后面，多一点换行就等于所有没写技能的
+        部署都拿到一份与从前不同的提示词，前缀缓存白废、`test_lead_agent` 那两条断言也会红。
+
+        **为什么拼字符串而不是用中间件往 messages 里插一条**：`tests/test_react.py` 硬编码了默认
+        中间件链的名字，`tests/test_lead_agent_memory.py` 断言模型收到 10 条消息——插消息会把后者
+        顶破，加中间件会把前者顶破。拼进 `system_prompt` 两条都不动（system 那条只是变长）。
+        """
+        return f"{base}\n\n{self._skill_section}" if self._skill_section else base
+
+    def lead(self, options: RunOptions | None = None) -> CompiledStateGraph:
         """建主 Agent 的图，连带它专属的子 agent 图与 ``task`` 工具。
 
         子 agent 图**必须跟着一起重建**：``make_task_tool`` 把子图闭包进工具、工具再进
@@ -143,53 +155,43 @@ class AgentFactory:
         ``options`` 是这次运行的参数（思考档位等）。**一个模型实例同时喂给子图与主图**，
         所以子 agent 自动跟随同一份参数——将来若要拆开，记得两边都要动。
 
-        ``extra_tools`` 是**只有这一次运行才有**的工具（T13 起是 MCP 工具，连接与图同寿命）。
-        它必须同时进**两处**——子图与主图共享的是同一个 ``combined``：
-
-        - 喂子图的只有 ``_subagent_tools(combined)``（那里剔掉 ``present_files``）；
-        - 主图拿 ``[*combined, make_task_tool(subagent)]``。
-
-        **漏掉子图那一处不会报错**，只会让子 agent 少一批工具（就是 ``present_files``
-        当初踩的静默失效）。所以别在这里「顺手只改一处」。
+        **``self.tools`` 里本来就含 MCP 工具**（启动期装载进 ``app.state``，见
+        `app.gateway.mcp`）。所以它们**自动**同时进子图与主图——T13 那层「每请求才有」的
+        ``extra_tools`` 就是因为这个语义才存在的，MCP 工具变成启动期常量之后它没必要了。
+        子图仍走 ``_subagent_tools``（剔掉 ``present_files``）。
         """
-        combined = [*self.tools, *extra_tools]
         model = self._model_factory(None, options)
         subagent = make_subagent_graph(
             model,
-            _subagent_tools(combined),
-            system_prompt=SUBAGENT_PROMPT,
+            _subagent_tools(self.tools),
+            system_prompt=self._prompt(SUBAGENT_PROMPT),
             checkpointer=self.checkpointer,
         )
         return make_lead_agent(
             model,
-            [*combined, make_task_tool(subagent)],
-            system_prompt=SYSTEM_PROMPT,
+            [*self.tools, make_task_tool(subagent)],
+            system_prompt=self._prompt(SYSTEM_PROMPT),
             middleware=self._lead_middlewares(model),
             checkpointer=self.checkpointer,
         )
 
-    def plan_exec(
-        self,
-        options: RunOptions | None = None,
-        *,
-        extra_tools: Sequence[Any] = (),
-    ) -> PlanRoles:
+    def plan_exec(self, options: RunOptions | None = None) -> PlanRoles:
         """建 Plan-Exec 的三件套（封存路径）。
 
         与 :meth:`lead` 一样是每请求一次：执行单元在构造时建图并闭包进 ``execute``，
         所以「重建」只能通过重建执行单元本身完成。``options`` 同样一个实例喂给三者，
         与主路径保持同一口径。
 
-        ``extra_tools`` 只喂**执行单元**——planner / replanner 走的是 ``with_structured_output``，
-        它们不调工具。
+        ``self.tools``（含 MCP 工具）只喂**执行单元**——planner / replanner 走的是
+        ``with_structured_output``，它们不调工具。
         """
         model = self._model_factory(None, options)
         return PlanRoles(
             planner=make_planner(model, system_prompt=PLANNER_PROMPT),
             executor=make_react_executor(
                 model,
-                [*self.tools, *extra_tools],
-                system_prompt=EXECUTOR_PROMPT,
+                self.tools,
+                system_prompt=self._prompt(EXECUTOR_PROMPT),
                 checkpointer=self.checkpointer,
             ),
             replanner=make_replanner(model, system_prompt=REPLANNER_PROMPT),

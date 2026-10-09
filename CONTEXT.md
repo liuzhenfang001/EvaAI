@@ -102,7 +102,8 @@ _Avoid_: tmp, 临时目录, sandbox
 
 **只读挂载（read-only mount）**：
 `/input` 与 `/skills` 的权限。前者因为改坏原件不可逆，后者因为可被模型改写的技能等于把提示
-注入面交给它。
+注入面交给它。T14 起 `/skills` 有了生产者——**启动期**把仓库里的技能源目录镜像过来（
+:func:`app.gateway.skills.project_skills`），所以它既不按会话分，也不由谁在会话里创建。
 _Avoid_: 权限, ACL
 
 **交付文件（presented file）**：
@@ -112,15 +113,29 @@ _Avoid_: 权限, ACL
 _Avoid_: artifact, 产出物, 附件, 文件引用（DeerFlow 管这个叫 artifact，那是它的 state channel 概念）
 
 **MCP 连接（MCP connection）**：
-一次运行里，客户端与某个 MCP server 之间那条连接。**作用域 = 一次运行**，与图同寿命（ADR-0017）：
-一次运行开一次、跑完就关，所以 server 挂了下一请求自动恢复，代价是有状态的 server 跨轮会话归零。
+客户端与某个 MCP server 之间那条连接。**生命周期 = 一次连接用途**：启动期那一次是为了**取工具
+列表**（取完就断），之后每条都建在模型**真的调某个工具**的那一刻（ADR-0017 补记二）。
+所以运行期**没有任何按运行的 MCP 资源**——工具清单是启动期常量，运行期零 I/O。
 它**不是**「会话」——「会话」在本项目里特指用户眼里那段连续对话。
-_Avoid_: session（上游 API 的叫法，在这里会与 thread（会话）撞车）、MCP 会话
+_Avoid_: session（上游 API 的叫法，会与 thread（会话）撞车）、MCP 会话、把连接说成「每请求的」
 
 **MCP 工具名**：
 `mcp__<server>__<tool>`，双下划线分隔。**始终加**，不是「撞名才加」——工具名一旦随配置变化，模型在
 对话里学过的名字与 RunJournal 里记的调用行就都失效了（journal 是要能回放的老数据）。
+**前缀同时就是挡撞名的那道墙**：server 提供 `read_file` 时它变成 `mcp__fs__read_file`，碰不到我们的
+`read_file`，也**永远不可能等于** `task` 这类裸的保留名。
 _Avoid_: `<server>_<tool>`（那是库默认在多 server 模式下的形状，分不清 server 名到哪结束）
+
+**技能（skill）**：
+仓库 `skills/<名>/SKILL.md` 里的一段「做事方法」，启动期**镜像**到 `/skills` 只读视图，模型需要时
+**自己**用 `read_file` 读全文。提示词里只放它的 `name` / `description` / 位置——**正文永远不进提示词**
+（保持提示词静态、前缀缓存友好）。技能名以**目录名**为准，frontmatter 的 `name` 必须与它一致。
+_Avoid_: 提示词模板、插件、工具（技能不调工具，它告诉模型**怎么做**）
+
+**技能清单（skill section）**：
+`render_skills_section` 渲染出来的那一段，拼在 `system_prompt` 后面。**没有技能时它整段消失**——
+拼装代码不能顺手加一个换行，否则没有技能的部署会拿到一份不同的提示词。
+_Avoid_: 技能列表、技能索引（那是参照项目的 `skill_index`，指「只给名字」的那条渐进披露路径）
 
 ### 交付
 
@@ -128,8 +143,8 @@ _Avoid_: `<server>_<tool>`（那是库默认在多 server 模式下的形状，�
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T13**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
+**T1–T14**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测

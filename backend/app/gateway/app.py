@@ -17,15 +17,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.gateway.agents import AgentFactory
+from app.gateway.mcp import load_mcp_tools
 from app.gateway.routers import chat, files, threads
 from app.gateway.run_registry import RunRegistry
+from app.gateway.skills import project_skills
 from app.tools.registry import build_tools
+from app.tools.sandbox import skills_view_root
 from evaharness.checkpoint.sqlite_saver import make_sqlite_checkpointer, prune_checkpoints
 from evaharness.config.app_config import AppConfig, JournalConfig
 from evaharness.config.extensions_config import ExtensionsConfig
 from evaharness.config.loader import load_config, load_env_file, load_extensions
 from evaharness.journal.factory import make_journal_store
-from evaharness.mcp import probe_mcp_servers
 
 # backend/app/gateway/app.py -> 项目根（config.yaml / .env 所在目录）
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -74,6 +76,14 @@ async def lifespan(app: FastAPI):
     # smoke build 之前——smoke build 正是要拿这份列表去试装配。
     business_tools = build_tools(app_config)
 
+    # 技能（T14）：把仓库里的源目录**镜像**到 `/skills` 的只读视图，再把清单交给建图工厂去拼进提示词。
+    #
+    # 放在**启动期**、`build_tools` 之后：技能是可选内容，坏了只记警告不拦启动（决议 #5），所以它
+    # 与「上面的配置写错就拒绝启动」是两种性格；放在这里是因为它确定、快，且不需要事件循环。
+    # 源在仓库里（进版本控制），视图在 `.evaai/` 下（运行期数据）——两层分工见 ADR-0018。
+    skills = project_skills(_resolve_path("skills"), skills_view_root())
+    app.state.skills = skills
+
     # AsyncSqliteSaver 需要活跃的事件循环，所以只能在这里构造；由 ExitStack 持有到关机。
     # 它也是**唯一**先天不可能每请求建的建图输入（ADR-0007）。
     async with AsyncExitStack() as stack:
@@ -88,7 +98,18 @@ async def lifespan(app: FastAPI):
         app.state.journal_store = make_journal_store(journal_config)
 
         # 建图的唯一入口。它只持有参数、不持有图：每个请求调 lead() / plan_exec() 现建。
-        app.state.agent_factory = AgentFactory(app_config, business_tools, checkpointer=saver)
+        # MCP：**连一次、把工具列表留下来**（之后就再不连了——运行期零 I/O，连接推迟到模型真的调
+        # 那个工具时，见 `app.gateway.mcp`）。它与技能投影同属「外部内容」，所以失败也只警告不拦
+        # 启动；与 smoke build 的分工是「我们自己的装配错→拒绝启动，外部依赖不可用→只警告」。
+        #
+        # 放在 AgentFactory 之前：工具表是构造参数，MCP 工具与业务工具在建图眼里没有区别。
+        mcp_tools = await load_mcp_tools(extensions.mcp_servers, business_tools=business_tools)
+        app.state.mcp_tools = mcp_tools
+        all_tools = [*business_tools, *mcp_tools]
+
+        app.state.agent_factory = AgentFactory(
+            app_config, all_tools, checkpointer=saver, skills=skills
+        )
 
         # 运行中 run 的登记表：取消端点靠它触达正在跑的 run（T5）。与 checkpointer 一样
         # 是长命共享物，但**没有活跃事件循环的约束**——只是一个 dict。
@@ -104,21 +125,9 @@ async def lifespan(app: FastAPI):
         # 它抓的是「装配连线断了」，不是「语义接错了」。
         #
         # checkpointer=None 是有意的：这一步只验装配，不该和 saver 的生命周期绑在一起。
-        smoke = AgentFactory(app_config, business_tools, checkpointer=None)
+        smoke = AgentFactory(app_config, all_tools, checkpointer=None, skills=skills)
         smoke.lead()
         smoke.plan_exec()
-
-        # 启动期探测 MCP：**只警告，不拦启动**（决策 #11）。
-        #
-        # 与上面那次 smoke build 是**两件事**，界线要记牢：smoke 验的是「我们自己的装配连线
-        # 通不通」（配置写错、`use` 指向不存在的类、模型构造不了）——错了就拒绝启动；探测验的是
-        # 「外部依赖**现在**能不能用」（那个 server 装没装、进程起不起得来、网络通不通）——错了
-        # 只记警告。把第三方 server 的可用性提到「EvaAI 打不开」的高度，会让一次网络抖动把助手
-        # 变成砖头。
-        #
-        # 代价：stdio 探测会 spawn 子进程、首次 npx 还要下包（实测 30.9 秒）。每个 server 因此都
-        # 套了硬超时，一个不响应的拖不住启动。
-        await probe_mcp_servers(extensions.mcp_servers)
 
         yield
 

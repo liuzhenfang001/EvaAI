@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-from langchain_protocol import Command
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph

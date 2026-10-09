@@ -28,7 +28,7 @@ from langchain_core.tools import BaseTool
 
 from evaharness.config.extensions_config import McpServerConfig
 from evaharness.mcp.client import make_adapter
-from evaharness.mcp.naming import prefix_tool
+from evaharness.mcp.naming import mcp_tool_name, prefix_tool
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +38,15 @@ AdapterFactory = Callable[[McpServerConfig], object]
 这是**测试缝**：装配逻辑因此能在不 spawn 任何进程、不 import fastmcp 传输层的前提下测完。
 """
 
-PROBE_TIMEOUT = 30.0
+PROBE_TIMEOUT = 60.0
 """启动期探测的**外层**硬超时（秒），与 server 自己的 `timeout` 无关。
 
 为什么探测要自带一个：server 自己那个 `timeout` 管的是会话内的请求，而探测要防的是
 「子进程起来了却一直不说话」——那种情况下连握手都完成不了，server 自己的超时根本没机会生效。
+
+**为什么是 60 而不是 30**：实测第一次 `npx` 起 filesystem server 要 **30.9 秒**（那一次要把包
+下下来）。30 秒卡在它下面，于是「刚配好、第一次启动」必然超时报警，而之后再启动又一切正常——
+那种「只错一次、查不到原因」的症状最难对付。冷启动之后它稳定在 2–3 秒。
 """
 
 
@@ -76,36 +80,61 @@ async def open_mcp_tools(
         yield collected
 
 
-async def probe_mcp_servers(
+async def load_mcp_tools(
     servers: Mapping[str, McpServerConfig],
     *,
     adapter_factory: AdapterFactory = make_adapter,
     timeout: float = PROBE_TIMEOUT,
-) -> None:
-    """启动期探测：逐个连上、列一遍工具、断开、记日志。**永不抛**。
+) -> list[BaseTool]:
+    """**启动期**逐个连上、把工具列表取回来留着，然后立刻断开。**永不抛。**
 
-    它验的是「外部依赖现在能不能用」，与启动期 smoke build 验的「我们自己的装配连线通不通」
-    是两件事——所以这里的失败是**警告**，而 smoke build 的失败**拒绝启动**（ADR-0017）。
+    这就是「加 MCP」的全部运行时成本所在：之后每次运行都用这份清单，**不再连任何东西**；
+    模型真的调某个工具时，工具内部才自己建连（`as_langchain_tool` 的 `call_tool` 里那个
+    `async with client`）。
 
-    代价说清楚：stdio 探测会 spawn 子进程，首次 `npx` 还要下载（实测 30.9 秒）。所以每个 server
-    都套了 `asyncio.timeout`，一个不响应的 server 拖不住启动。
+    为什么这样分：工具在模型眼里的样子（`name` / `description` / `args_schema`）是**数据**，
+    建图时随 `bind_tools` 发出去，**不需要连接**；连接只在**执行**时才需要。实测（2026-10-10）：
+    连接关掉之后工具对象照样带着完整的 schema，5 路并发调用全部成功，且进程数不累积。
+
+    连不上的 server 只记警告、不拦启动（决策 #2），它带来的工具这次进程生命周期内就不会有——
+    想让它生效要重启。与启动期 smoke build 的分工照旧：smoke 验**我们自己的装配**（错了拒绝启动），
+    这里验**外部依赖现在能不能用**（错了只警告）。
+
+    代价说清楚：stdio 会 spawn 子进程，首次 `npx` 还要下载（实测 30.9 秒），所以每个 server 都套了
+    `asyncio.timeout`，一个不响应的拖不住启动。
     """
+    collected: list[BaseTool] = []
     for name, server in servers.items():
         try:
             async with asyncio.timeout(timeout):
                 adapter = adapter_factory(server)
                 async with adapter:  # type: ignore[attr-defined]
                     tools = await adapter.list_tools(cache_mode="bypass")  # type: ignore[attr-defined]
+            collected.extend(prefix_tool(tool, name) for tool in tools)
             logger.info(
-                "MCP server %r 可用，%d 个工具：%s",
+                "MCP server %r 接上了，%d 个工具：%s",
                 name,
                 len(tools),
-                ", ".join(sorted(tool.name for tool in tools)),
+                ", ".join(sorted(mcp_tool_name(name, tool.name) for tool in tools)),
+            )
+        except TimeoutError:
+            # `asyncio.timeout` 抛的 `TimeoutError` 的 str() 是**空的**——不单独接住的话，日志会
+            # 打成「失败：TimeoutError」，既不说超时、也不说可能只是在下包（实测第一次 npx
+            # 要 30.9 秒）。
+            logger.warning(
+                "MCP server %r 连接超时（%.0f 秒内没连上），服务照常启动，本次不会有它的工具。"
+                "如果是第一次用它，可能只是在下包或编译——再启动一次通常就好了；"
+                "真要更久就在 extensions_config.json 里给它加 `timeout`。",
+                name,
+                timeout,
             )
         except Exception as exc:
             logger.warning(
-                "MCP server %r 探测失败，服务照常启动（本次运行不会有它的工具）：%s", name, exc
+                "MCP server %r 连接失败，服务照常启动，本次不会有它的工具：%s", name, exc
             )
+    # 排序：让这次进程生命周期里交出去的顺序是确定的。工具定义会随请求发给模型，顺序抖动会让
+    # 前缀缓存白废（与技能清单排序同一个理由）。
+    return sorted(collected, key=lambda tool: tool.name)
 
 
-__all__ = ["AdapterFactory", "PROBE_TIMEOUT", "open_mcp_tools", "probe_mcp_servers"]
+__all__ = ["AdapterFactory", "PROBE_TIMEOUT", "load_mcp_tools", "open_mcp_tools"]

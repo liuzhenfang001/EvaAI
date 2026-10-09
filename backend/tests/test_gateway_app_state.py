@@ -44,6 +44,17 @@ def _extensions(monkeypatch):
     monkeypatch.setattr("app.gateway.app.load_extensions", lambda _path: {"mcpServers": {}})
 
 
+@pytest.fixture(autouse=True)
+def _skills(monkeypatch):
+    """技能投影换成空实现，**不碰真的 `backend/.evaai/skills-view`**。
+
+    T14 起 lifespan 会把仓库里的 `skills/` 镜像到运行期目录——那是**真实磁盘写入**。测试既不该依赖
+    它，也不该污染它（今天仓库里只有示例技能，看不出问题；等哪天技能写坏了或有人在跑测试的同时改技能，
+    症状会非常难查）。投影自身的契约在 `test_skills_projection.py`。
+    """
+    monkeypatch.setattr("app.gateway.app.project_skills", lambda _src, _view: [])
+
+
 @pytest.mark.asyncio
 async def test_lifespan_attaches_only_long_lived_state(monkeypatch):
     built: list[str | None] = []
@@ -72,8 +83,9 @@ async def test_lifespan_attaches_only_long_lived_state(monkeypatch):
         assert isinstance(app.state.agent_factory, AgentFactory), "建图的唯一入口不见了"
         assert isinstance(app.state.checkpointer, InMemorySaver), "checkpointer 必须长命"
         assert app.state.app_config is not None
-        # 第三层配置也是长命物：MCP 连接是每请求的，但「连哪些 server」是启动期定下来的。
+        # 第三层配置也是长命物：**MCP 工具在启动期装载一次**，之后每次运行都用这份清单。
         assert app.state.extensions_config is not None
+        assert app.state.mcp_tools == [], "没配 server 时该是空表（`_extensions` fixture 给的就是空）"
         for ghost in GHOSTS:
             assert not hasattr(app.state, ghost), f"app.state 上不该再有 {ghost}"
 

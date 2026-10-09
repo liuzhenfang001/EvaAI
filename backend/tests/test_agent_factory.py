@@ -53,6 +53,7 @@ def _factory(
     tools: Sequence[Any] = (),
     checkpointer: Any | None = None,
     model_factory: ModelFactory | None = None,
+    skills: Sequence[Any] = (),
     **summarization: Any,
 ) -> AgentFactory:
     return AgentFactory(
@@ -60,6 +61,7 @@ def _factory(
         list(tools),
         checkpointer=checkpointer,
         model_factory=model_factory or _answering("好的。"),
+        skills=list(skills),
     )
 
 
@@ -266,12 +268,12 @@ def _mcp_read(path: str) -> str:
     return path
 
 
-def test_extra_tools_reach_both_the_main_graph_and_the_subagent(monkeypatch):
-    """``extra_tools`` 必须同时进**两处**。
+def test_mcp_tools_reach_both_the_main_graph_and_the_subagent(monkeypatch):
+    """MCP 工具与业务工具一样，必须同时进**主图与子图**。
 
-    只进主图**不会报错**，只会让子 agent 少一批工具——那正是 ``present_files`` 当初踩的静默
-    失效。所以这条真正盯的是**子图那一半**：谁把 ``make_subagent_graph(model,
-    _subagent_tools(self.tools), ...)`` 改回只传 ``self.tools``，这里就红。
+    它们现在是启动期装载进 ``self.tools`` 的（`app.gateway.mcp`），所以本该**自动**跟着走——
+    这条盯的就是「别把它们特殊化掉」：只进主图**不会报错**，只会让子 agent 少一批工具，那正是
+    ``present_files`` 当初踩的静默失效。
     """
     import app.gateway.agents as agents_module
 
@@ -290,33 +292,108 @@ def test_extra_tools_reach_both_the_main_graph_and_the_subagent(monkeypatch):
     monkeypatch.setattr(agents_module, "make_subagent_graph", spy_subagent)
     monkeypatch.setattr(agents_module, "make_lead_agent", spy_lead)
 
-    _factory(tools=[_biz]).lead(extra_tools=[_mcp_read])
+    _factory(tools=[_biz, _mcp_read]).lead()
 
     assert seen["subagent"] == ["biz", "mcp__fs__read_file"], "MCP 工具没进子图（静默失效）"
     assert seen["lead"] == ["biz", "mcp__fs__read_file", TASK_TOOL_NAME]
 
 
-def test_extra_tools_still_skip_present_files_in_the_subagent():
-    """`_subagent_tools` 是**黑名单**——加了 extra_tools 之后它仍要剔掉 `present_files`。
+def test_the_subagent_tool_list_is_a_blacklist_not_a_whitelist():
+    """`_subagent_tools` 是**黑名单**（只剔 `present_files`），所以 MCP 工具默认能进。
 
-    这条是防「为了让 MCP 工具进子图，顺手把黑名单改成白名单」那种改法。
+    这条是防「为了让某类工具进子图，顺手把它改成白名单」那种改法——一改就会把没列进去的工具
+    全部静默丢掉。
     """
     from app.gateway.agents import _subagent_tools
 
     assert _subagent_tools([_biz, _mcp_read]) == [_biz, _mcp_read]
 
 
-def test_the_plan_executor_gets_the_extra_tools(monkeypatch):
-    """封存路径的执行单元也要拿到——两条路保持同一口径（ADR-0011）。"""
+# --------------------------------------------------------------------------- #
+# 技能清单进提示词（T14）
+# --------------------------------------------------------------------------- #
+
+
+def _skill():
+    from evaharness.skills import Skill
+
+    return Skill(name="writer", description="帮我写文档", location="/skills/writer/SKILL.md")
+
+
+def _spy_system_prompts(monkeypatch) -> dict[str, str]:
+    """把四个 `make_*` 换成记录 `system_prompt` 的替身。"""
     import app.gateway.agents as agents_module
 
-    seen: dict[str, list[str]] = {}
-    real = agents_module.make_react_executor
+    seen: dict[str, str] = {}
 
-    def spy(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
-        seen["executor"] = [t.name for t in (tools or [])]
-        return real(model, tools, **kwargs)
+    def spy_subagent(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
+        seen["subagent"] = kwargs.get("system_prompt") or ""
+        return real_subagent(model, tools, **kwargs)
 
-    monkeypatch.setattr(agents_module, "make_react_executor", spy)
-    _factory(tools=[_biz]).plan_exec(extra_tools=[_mcp_read])
-    assert seen["executor"] == ["biz", "mcp__fs__read_file"]
+    def spy_lead(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
+        seen["lead"] = kwargs.get("system_prompt") or ""
+        return real_lead(model, tools, **kwargs)
+
+    def spy_executor(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
+        seen["executor"] = kwargs.get("system_prompt") or ""
+        return real_executor(model, tools, **kwargs)
+
+    def spy_planner(model, **kwargs):  # noqa: ANN001, ANN003
+        seen["planner"] = kwargs.get("system_prompt") or ""
+        return real_planner(model, **kwargs)
+
+    real_subagent = agents_module.make_subagent_graph
+    real_lead = agents_module.make_lead_agent
+    real_executor = agents_module.make_react_executor
+    real_planner = agents_module.make_planner
+
+    monkeypatch.setattr(agents_module, "make_subagent_graph", spy_subagent)
+    monkeypatch.setattr(agents_module, "make_lead_agent", spy_lead)
+    monkeypatch.setattr(agents_module, "make_react_executor", spy_executor)
+    monkeypatch.setattr(agents_module, "make_planner", spy_planner)
+    return seen
+
+
+def test_the_skill_section_reaches_lead_subagent_and_executor(monkeypatch):
+    """技能清单必须同时进**三条** consumer——漏一处就是静默失效（`present_files` 的同款）。
+
+    这条盯的是「谁把某处改回 `system_prompt=BASE`」：那不会报错，只会让那张图看不见技能，而症状是
+    「模型明明该会用那个技能，却像没听说过」——非常难查。
+    """
+    seen = _spy_system_prompts(monkeypatch)
+    factory = _factory(tools=[_biz], skills=[_skill()])
+
+    factory.lead()
+    factory.plan_exec()
+
+    for where in ("subagent", "lead", "executor"):
+        assert "writer" in seen[where], f"{where} 那张图没拿到技能清单（静默失效）"
+        assert "/skills/writer/SKILL.md" in seen[where], f"{where} 那张图没拿到技能的读取位置"
+
+
+def test_the_planner_does_not_get_the_skill_section(monkeypatch):
+    """planner 走结构化输出、不调工具，读不了技能——与 `extra_tools` 同口径，别顺手给它。"""
+    seen = _spy_system_prompts(monkeypatch)
+
+    _factory(tools=[_biz], skills=[_skill()]).plan_exec()
+
+    assert "writer" not in seen["planner"]
+
+
+def test_no_skills_leaves_every_prompt_byte_for_byte_alone(monkeypatch):
+    """没有技能时提示词必须与从前**逐字节相同**。
+
+    拼装代码顺手多加一个换行，就等于所有没写技能的部署都拿到一份新提示词——前缀缓存白废，而且
+    `test_lead_agent` 里那两条断言 prompt 取值的测试会红。这条把「空就一字不差」钉住。
+    """
+    from app.prompts import EXECUTOR_PROMPT, SUBAGENT_PROMPT, SYSTEM_PROMPT
+
+    seen = _spy_system_prompts(monkeypatch)
+    factory = _factory(tools=[_biz])
+
+    factory.lead()
+    factory.plan_exec()
+
+    assert seen["lead"] == SYSTEM_PROMPT
+    assert seen["subagent"] == SUBAGENT_PROMPT
+    assert seen["executor"] == EXECUTOR_PROMPT

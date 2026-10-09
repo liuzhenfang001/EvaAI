@@ -80,7 +80,9 @@ DEFAULT_MOUNT = "/workspace"
 SESSION_MOUNTS = tuple(mount for mount in MOUNTS if _SESSION in mount.parts)
 """按会话分的挂载点（``/input`` ``/output`` ``/workspace``）。
 
-``/skills`` 不在其中：它是全局共享的，不随会话建，也还没有生产者。
+``/skills`` 不在其中：它是**全局共享**的，不随会话建。它的生产者是
+:func:`app.gateway.skills.project_skills`（T14 起）——**启动期**把仓库里的技能源目录镜像过来，
+所以它既不按会话分，也不由谁在会话里创建。
 """
 
 _MOUNT_LIST = "、".join(mount.virtual for mount in MOUNTS)
@@ -242,6 +244,19 @@ class Sandbox:
         return resolved
 
 
+def skills_view_root(*, root: Path | None = None) -> Path:
+    """``/skills`` 挂载点的**宿主**目录。
+
+    做成函数而不是让调用方拼 ``SANDBOX_ROOT / "skills-view"``：宿主布局的知识只留在本模块，而且它
+    必须与 :data:`MOUNTS` 里那条 ``Mount("/skills", parts=("skills-view",))`` 始终一致——两处各写
+    一份迟早会漂移。
+
+    **调用时读 ``SANDBOX_ROOT`` 全局**（理由同 :data:`SANDBOX_ROOT` 的注释）：测试 monkeypatch 它
+    之后这个函数也要跟着变。
+    """
+    return (Path(root) if root is not None else SANDBOX_ROOT) / "skills-view"
+
+
 def ensure_session_dirs(session_id: str) -> None:
     """把一个会话的文件空间建出来（幂等）。
 
@@ -262,4 +277,5 @@ __all__ = [
     "PathNotAllowedError",
     "Sandbox",
     "ensure_session_dirs",
+    "skills_view_root",
 ]

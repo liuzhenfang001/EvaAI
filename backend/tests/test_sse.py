@@ -183,3 +183,32 @@ async def test_sse_consumer_does_not_swallow_cancellation():
             frames.append(frame)
 
     assert [_parse(f)[0] for f in frames] == ["plan"]
+
+
+@pytest.mark.asyncio
+async def test_closing_the_consumer_closes_the_upstream_generator():
+    """`aclosing` 链：消费者被关掉时，上游生成器也必须被 `aclose`。
+
+    与 MCP 无关——它保的是 `run_lead_agent` **自己的收尾**：runner 的 `finally` 要取消内层 pump
+    并注销 run，而那个 `finally` 只有上游被 `aclose` 时才会跑。`async for` 提前退出**不会**自动关
+    上游生成器（Python 语义），所以 `sse_consumer` 与 `journaled` 各套了一层 `aclosing`。
+
+    客户端断开时走的就是这条路：`CancelledError` 从最深处穿透，链子逐层收尾。
+    """
+    closed: list[str] = []
+
+    async def upstream():
+        try:
+            while True:
+                yield RunStartEvent(
+                    run_id="r", thread_id="t", request="hi", started_at="2026-10-10T10:00:00+00:00"
+                )
+        finally:
+            closed.append("upstream")
+
+    frames = sse_consumer(upstream())
+    await anext(frames)
+    assert closed == [], "还没关就不该关上游"
+
+    await frames.aclose()
+    assert closed == ["upstream"], "消费者被关掉时上游没被 aclose —— `aclosing` 丢了"

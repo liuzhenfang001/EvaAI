@@ -19,6 +19,7 @@ backend/
 │   └── tools/                     # 工具注册表 + 文件沙箱 + 文件/联网工具
 └── tests/                         # 测试（含 test_harness_boundary.py 强制单向依赖）
 frontend/                          # Next.js 前端（会话栏 + 聊天区 + 浮动任务面板）
+skills/                            # 技能源（启动期镜像到 /skills，见 skills/README.md）
 config.yaml / config.example.yaml  # 主配置（版本化，$ENV 引用）
 extensions_config.json             # 扩展（MCP / skills / middlewares），模板同上
 .env                               # 密钥
@@ -85,7 +86,7 @@ tools:
 | `/workspace` | 工作台，相对路径的落点 | 读写 |
 | `/output` | 交付给用户的成品 | 读写 |
 | `/input` | 用户上传的原件 | 只读 |
-| `/skills` | 技能说明文件 | 只读 |
+| `/skills` | 技能说明文件（启动期从仓库的 `skills/` 镜像过来） | 只读 |
 
 联网工具的两个 key 都是**可选**的：web_search 走 Tavily，不填 `TAVILY_API_KEY` 就用它的无 key 模式（能用，但有速率上限）；web_fetch 走 Jina Reader，不填 `JINA_API_KEY` 也能用（同样只是速率受限）。
 - **配置**：三层（.env / config.yaml / extensions_config.json），启动加载 + `config_version` 校验，无热重载。
@@ -118,14 +119,42 @@ server 就有 `read_file` / `write_file`，正是我们的工具名）。
 
 几条要记住的行为：
 
-- **连接是每请求建的**：一次运行开一次、跑完就关。好处是 server 挂了下一请求自动恢复；代价是
-  stdio 每次都会 spawn 子进程，而且**有状态的 server 跨轮会话会归零**。
-- **一个 server 连不上不影响别的**，也不影响服务启动。启动期会探测一次并**响亮地警告**（探测会
-  spawn 子进程、首次 `npx` 还要下包，所以启动可能多等几秒），运行期只记日志。
+- **工具清单在启动期取一次**，之后每次运行**零 I/O**；连接建在模型**真的调某个工具**的那一刻。
+  好处是不用 MCP 的对话完全免费；代价是「调几次就付几次建连」（stdio 每次约 2 秒），而且
+  **连不上的 server 要重启才生效**、连上后又挂掉的 server 会**在调用的那一刻**报错而不是被跳过。
+- **一个 server 连不上不影响别的**，也不影响服务启动。启动期会连一次并**响亮地警告**（会
+  spawn 子进程、首次 `npx` 还要下包，所以启动可能多等几秒）。
 - **Windows 上要写 `npx.cmd`，不能写 `npx`**——PATH 里那个无扩展名的 `npx` 是 Git Bash 的 sh 脚本，
   `CreateProcess` 会报 `WinError 193`，而那句话里没有一个字指向真正的原因。（我们也会兜一层：
   命令解析到无扩展名的文件时会去找同名的 `.cmd`。）
 - 没配任何 server 时，这一整套代码**一行都不碰**——运行路径与 T12 之前完全一致。
+
+## 技能（T14）
+
+`skills/<名>/SKILL.md` 里写一段「做事方法」，重启后端后它就会出现在模型的提示词里：
+
+```markdown
+---
+name: 写周报
+description: 把这一周做过的事整理成一份能直接发出去的周报。
+---
+
+正文：给模型看的操作步骤。
+```
+
+规则只有两条硬性的：**`name` 必须与目录名逐字相同**、**`description` 必须有**（它直接进提示词，
+模型只凭这一句决定要不要读正文）。其余字段会被忽略。完整说明见 [skills/README.md](skills/README.md)。
+
+几条要记住的行为：
+
+- **正文不进提示词**：提示词里只有名字、描述和一个位置，模型判断相关时**自己** `read_file` 读全文。
+  这样提示词不会随技能正文膨胀，改一个技能也不会让前缀缓存失效。
+- **启动期镜像**：`skills/` 是源（进版本控制），`backend/.evaai/skills-view/` 是视图（运行期数据、
+  已 gitignore）。**源里删掉的技能也会从视图里消失**；一个技能都没有时不建视图目录。
+- **改技能要重启**（没有热加载）。
+- **坏技能只警告**：启动日志里点名是哪个目录、差在哪里，服务照常起。技能是可选内容，不像
+  `config.yaml` 的工具那样「写错就拒绝启动」——但也不会静默跳过。
+- 想停用某个技能就把它的目录移走；`extensions_config.json` 的 `skills` 那一节目前**没有用途**。
 
 ## 四维度验收（T6）
 
@@ -158,6 +187,7 @@ server 就有 `read_file` / `write_file`，正是我们的工具名）。
 - [x] **T11**（#11）文件卡片与预览：`present_files` 工具 + 下载路由 + 右侧预览面板（ADR-0015）
 - [x] **T12**（#12）思考模式与动态思考深度：DeepSeek 适配器 + 每请求参数契约 + 档位选择器（ADR-0016）
 - [x] **T13**（#14）MCP 集成：`mcpServers` 配置 + 每请求连接（`langchain.mcp`）+ `mcp__<server>__<tool>` 命名（ADR-0017）
+- [x] **T14**（#15）skill 加载机制：仓库 `skills/` 源目录 → 启动期镜像到 `/skills` → 提示词只列清单（ADR-0018）
 
 **三期范围**（2026-10-08 起）见 [Issue #13](https://github.com/liuzhenfang001/EvaAI/issues/13)：docker 沙箱、skill 加载机制、MCP、Rag（+ llm wiki）。
 
