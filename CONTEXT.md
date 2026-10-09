@@ -83,9 +83,10 @@ _Avoid_: 自检, health check, 预热（warmup 会保留产物，这里不保留
 ### 工具与文件
 
 **工具注册表（tool registry）**：
-「agent 能做什么」的唯一来源：配置里列出工具（`name` + `use`），启动期反射建出 `BaseTool`。
-`use` 可以指向工具**实例**，也可以指向**工厂**——工厂的额外键就是它的构造参数（参数在构建期
-绑进闭包，工具实例因此是自足的）。写错就在启动期拒绝启动。
+**我们自己的工具**（业务工具）的唯一来源：`config.yaml` 里列出工具（`name` + `use`），启动期反射
+建出 `BaseTool`。`use` 可以指向工具**实例**，也可以指向**工厂**——工厂的额外键就是它的构造参数
+（参数在构建期绑进闭包，工具实例因此是自足的）。写错就在启动期拒绝启动。
+T13 起 agent 的工具表还有**第二个来源**：MCP（见下），它不在 `tools:` 里、也不在注册表里。
 _Avoid_: tool loader, 插件系统, 工具工厂
 
 **挂载根 / 虚拟路径（mount root / virtual path）**：
@@ -110,14 +111,25 @@ _Avoid_: 权限, ACL
 「显式」是要点：`/workspace` 里的东西**不算**交付文件，写得再多也不会出现在用户面前。
 _Avoid_: artifact, 产出物, 附件, 文件引用（DeerFlow 管这个叫 artifact，那是它的 state channel 概念）
 
+**MCP 连接（MCP connection）**：
+一次运行里，客户端与某个 MCP server 之间那条连接。**作用域 = 一次运行**，与图同寿命（ADR-0017）：
+一次运行开一次、跑完就关，所以 server 挂了下一请求自动恢复，代价是有状态的 server 跨轮会话归零。
+它**不是**「会话」——「会话」在本项目里特指用户眼里那段连续对话。
+_Avoid_: session（上游 API 的叫法，在这里会与 thread（会话）撞车）、MCP 会话
+
+**MCP 工具名**：
+`mcp__<server>__<tool>`，双下划线分隔。**始终加**，不是「撞名才加」——工具名一旦随配置变化，模型在
+对话里学过的名字与 RunJournal 里记的调用行就都失效了（journal 是要能回放的老数据）。
+_Avoid_: `<server>_<tool>`（那是库默认在多 server 模式下的形状，分不清 server 名到哪结束）
+
 ### 交付
 
 **垂直切片（tracer bullet）**：
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T12**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)。二期到 T12 收尾，之后是[三期的范围](https://github.com/liuzhenfang001/EvaAI/issues/13)。
+**T1–T13**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测

@@ -76,17 +76,23 @@ class _RecordingFactory(AgentFactory):
         self.plans: list = []
         self.lead_options: list = []
         self.plan_options: list = []
+        # T13：这次运行额外带进来的工具（MCP）。空表是常态——这个假 app 上没挂
+        # `extensions_config`，所以 `mcp_tools_for_run` 直接产出空表、一行库代码都不碰。
+        self.lead_extra_tools: list = []
+        self.plan_extra_tools: list = []
 
-    def lead(self, options=None):  # noqa: ANN001, ANN201
-        graph = super().lead(options)
+    def lead(self, options=None, *, extra_tools=()):  # noqa: ANN001, ANN201
+        graph = super().lead(options, extra_tools=extra_tools)
         self.leads.append(graph)
         self.lead_options.append(options)
+        self.lead_extra_tools.append(list(extra_tools))
         return graph
 
-    def plan_exec(self, options=None):  # noqa: ANN001, ANN201
-        roles = super().plan_exec(options)
+    def plan_exec(self, options=None, *, extra_tools=()):  # noqa: ANN001, ANN201
+        roles = super().plan_exec(options, extra_tools=extra_tools)
         self.plans.append(roles)
         self.plan_options.append(options)
+        self.plan_extra_tools.append(list(extra_tools))
         return roles
 
 

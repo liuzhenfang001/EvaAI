@@ -13,19 +13,33 @@
 所以它的路由与测试原样留着，只是不再是默认。
 
 两条路由都在**请求路径上现建图**（`state.agent_factory`，见 ADR-0011），而不是共享
-lifespan 建好的那一张：中间件的追踪状态因此不跨请求。建图在返回 `StreamingResponse`
-**之前**发生，所以构造错误表现为 500，而不是一条坏掉的流。
+lifespan 建好的那一张：中间件的追踪状态因此不跨请求。
+
+**建图从 T13 起挪进了 run 生成器**（`_run_lead` / `_run_plan`）。原因是两个约束互相夹：
+MCP 工具必须在 `create_agent(tools=...)` **之前**拿到手，而 MCP 连接必须活到**整轮跑完**。
+所以「连 MCP → 建图 → 跑」只能发生在同一个异步作用域里，而那个作用域就是生成器体
+（ADR-0011 已经定了「图的寿命 = 响应流的寿命」）。
+
+**代价如实记着**：建图错误从「返回 StreamingResponse 之前炸 → JSON 500」变成「流里抛 →
+SSE error 帧」（ADR-0011 记的那条后果，ADR-0017 更新）。这是有意的取舍：500 对前端本来就是
+更难察觉的那种（它期望 SSE，收到 JSON 会表现为「没有任何反应」），而配置写错、类路径写错、
+模型构造失败这几类已经被启动期 smoke build 挡在服务起来之前了。
+
+请求**参数**的校验（`thread_id` 非法 → 400）与 `ensure_session_dirs` 仍然留在端点里、
+生成器之外——那些该在流开始之前就给出 HTTP 状态码。
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.gateway.mcp import mcp_tools_for_run
 from app.gateway.sse import sse_consumer
 from app.tools.sandbox import ensure_session_dirs
 from evaharness.agents.lead_agent import RunCancellation, run_lead_agent
@@ -86,16 +100,42 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     options = RunOptions(thinking=body.thinking)
     return _stream(
         request,
-        run_lead_agent(
-            body.content,
-            agent=state.agent_factory.lead(options),
-            run_id=run_id,
-            thread_id=thread_id,
-            cancellation=_make_cancellation(state, run_id),
-            options=options,
-        ),
+        _run_lead(state, body, options, run_id, thread_id, _make_cancellation(state, run_id)),
         thread_id,
     )
+
+
+async def _run_lead(
+    state,
+    body: ChatRequest,
+    options: RunOptions,
+    run_id: str,
+    thread_id: str,
+    cancellation: RunCancellation,
+) -> AsyncIterator[RunEvent]:
+    """一次运行的全部：进 MCP 连接 → 建图 → 跑 → 收摊。
+
+    三层的 `aclosing` 里这是最里面一层，也是最要紧的一层：**它保证 MCP 连接会被还回去**。
+    `async for` 提前退出**不会**自动关上游生成器，所以客户端断开（CancelledError 从
+    `queue.get()` 穿透）时，包在外面的 `async with` 只能靠这里显式 `aclose` 才轮得到执行——
+    不然 npx 子进程会一直留着（ADR-0017 记了这条实测）。
+
+    连接与图**同生共死**：`agent` 是在连接开着的时候建的，所以它拿到的工具在整轮内都有效。
+    """
+    async with mcp_tools_for_run(state) as extra_tools:
+        agent = state.agent_factory.lead(options, extra_tools=extra_tools)
+        async with aclosing(
+            run_lead_agent(
+                body.content,
+                agent=agent,
+                run_id=run_id,
+                thread_id=thread_id,
+                cancellation=cancellation,
+                options=options,
+            )
+        ) as events:
+            async for event in events:
+                yield event
 
 
 @router.post("/cancel")
@@ -132,19 +172,39 @@ async def plan_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     state = request.app.state
     thread_id = _resolve_thread_id(body)
     ensure_session_dirs(thread_id)
-    roles = state.agent_factory.plan_exec(RunOptions(thinking=body.thinking))
+    run_id = uuid4().hex[:12]
     return _stream(
         request,
-        run_plan_exec(
-            body.content,
-            planner=roles.planner,
-            executor=roles.executor,
-            replanner=roles.replanner,
-            run_id=uuid4().hex[:12],
-            thread_id=thread_id,
-        ),
+        _run_plan(state, body, RunOptions(thinking=body.thinking), run_id, thread_id),
         thread_id,
     )
+
+
+async def _run_plan(
+    state,
+    body: ChatRequest,
+    options: RunOptions,
+    run_id: str,
+    thread_id: str,
+) -> AsyncIterator[RunEvent]:
+    """封存路径的同构版本——**两套生命周期并存会让人误以为那是有理由的**（ADR-0011）。
+
+    Plan-Exec 的取消不走 registry（T5 只给主路径做了硬取消），所以这里没有 `cancellation`。
+    """
+    async with mcp_tools_for_run(state) as extra_tools:
+        roles = state.agent_factory.plan_exec(options, extra_tools=extra_tools)
+        async with aclosing(
+            run_plan_exec(
+                body.content,
+                planner=roles.planner,
+                executor=roles.executor,
+                replanner=roles.replanner,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
+        ) as events:
+            async for event in events:
+                yield event
 
 
 def _resolve_thread_id(body: ChatRequest) -> str:

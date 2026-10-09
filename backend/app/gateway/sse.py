@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
 from evaharness.agents.plan_exec.events import MessagesEvent, RunEvent
@@ -52,10 +53,16 @@ async def sse_consumer(events: AsyncIterator[RunEvent]) -> AsyncIterator[str]:
 
     注意 ``except Exception`` 拦不到 :class:`asyncio.CancelledError`（它继承
     ``BaseException``）——客户端断开时的硬取消会原样穿透（ADR-0005）。
+
+    **`aclosing` 不是可选的**（T13 补上）：`async for` 提前退出**不会**关上游生成器，
+    所以断开时上游那些包在生成器里的 ``AsyncExitStack``（MCP 连接就在那里）**永远不会被退出**
+    ——npx 子进程会一直留着。套一层 `aclosing` 就把「关上游」锚在异常解开的路径上，不再依赖
+    框架来调 `aclose`（Starlette 不保证会调）。
     """
     try:
-        async for event in events:
-            yield map_run_event(event)
+        async with aclosing(events) as stream:
+            async for event in stream:
+                yield map_run_event(event)
         yield format_sse("end", None)
     except Exception as exc:  # 流式兜底：把异常转为 error 事件而非中断连接
         yield format_sse("error", {"message": str(exc), "name": type(exc).__name__})

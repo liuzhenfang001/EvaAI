@@ -34,6 +34,16 @@ def _config(**overrides: object) -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _extensions(monkeypatch):
+    """第三层配置指向一份**固定的空文件**，不去读仓库里那份真文件。
+
+    T13 起 lifespan 会读它，而它从此是要被 gitignore 的（模板入库、真文件忽略）——测试依赖它
+    存在，就等于依赖「开发者本机跑过 `cp`」。空 `mcpServers` 也让启动期探测无事可做。
+    """
+    monkeypatch.setattr("app.gateway.app.load_extensions", lambda _path: {"mcpServers": {}})
+
+
 @pytest.mark.asyncio
 async def test_lifespan_attaches_only_long_lived_state(monkeypatch):
     built: list[str | None] = []
@@ -62,6 +72,8 @@ async def test_lifespan_attaches_only_long_lived_state(monkeypatch):
         assert isinstance(app.state.agent_factory, AgentFactory), "建图的唯一入口不见了"
         assert isinstance(app.state.checkpointer, InMemorySaver), "checkpointer 必须长命"
         assert app.state.app_config is not None
+        # 第三层配置也是长命物：MCP 连接是每请求的，但「连哪些 server」是启动期定下来的。
+        assert app.state.extensions_config is not None
         for ghost in GHOSTS:
             assert not hasattr(app.state, ghost), f"app.state 上不该再有 {ghost}"
 

@@ -17,13 +17,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.gateway.agents import AgentFactory
-from app.gateway.run_registry import RunRegistry
 from app.gateway.routers import chat, files, threads
+from app.gateway.run_registry import RunRegistry
 from app.tools.registry import build_tools
 from evaharness.checkpoint.sqlite_saver import make_sqlite_checkpointer, prune_checkpoints
 from evaharness.config.app_config import AppConfig, JournalConfig
-from evaharness.config.loader import load_config, load_env_file
+from evaharness.config.extensions_config import ExtensionsConfig
+from evaharness.config.loader import load_config, load_env_file, load_extensions
 from evaharness.journal.factory import make_journal_store
+from evaharness.mcp import probe_mcp_servers
 
 # backend/app/gateway/app.py -> 项目根（config.yaml / .env 所在目录）
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -57,6 +59,16 @@ async def lifespan(app: FastAPI):
     app_config = AppConfig.model_validate(config_data)
     # 下一片「每请求参数从哪来」要从这里长出去（请求体 / 按会话持久化 / 全局 + 覆盖）。
     app.state.app_config = app_config
+
+    # 第三层配置（T13 第一次给它接上消费者）：MCP server 的声明。
+    #
+    # 它和 .env / config.yaml 一样是**必须存在**的一层——文件缺失就拒绝启动，与另两层同口径
+    # （所以 README 的「快速开始」里有一句 cp）。一个写错的 server 不会拖垮整份文件：
+    # 坏的在那里就被摘掉并记警告（见 `parse_mcp_servers`）。
+    extensions = ExtensionsConfig.model_validate(
+        load_extensions(PROJECT_ROOT / "extensions_config.json")
+    )
+    app.state.extensions_config = extensions
 
     # 工具从配置里来（注册项写错、重名、name 不匹配、工厂参数写错都在这里炸）。必须在
     # smoke build 之前——smoke build 正是要拿这份列表去试装配。
@@ -95,6 +107,18 @@ async def lifespan(app: FastAPI):
         smoke = AgentFactory(app_config, business_tools, checkpointer=None)
         smoke.lead()
         smoke.plan_exec()
+
+        # 启动期探测 MCP：**只警告，不拦启动**（决策 #11）。
+        #
+        # 与上面那次 smoke build 是**两件事**，界线要记牢：smoke 验的是「我们自己的装配连线
+        # 通不通」（配置写错、`use` 指向不存在的类、模型构造不了）——错了就拒绝启动；探测验的是
+        # 「外部依赖**现在**能不能用」（那个 server 装没装、进程起不起得来、网络通不通）——错了
+        # 只记警告。把第三方 server 的可用性提到「EvaAI 打不开」的高度，会让一次网络抖动把助手
+        # 变成砖头。
+        #
+        # 代价：stdio 探测会 spawn 子进程、首次 npx 还要下包（实测 30.9 秒）。每个 server 因此都
+        # 套了硬超时，一个不响应的拖不住启动。
+        await probe_mcp_servers(extensions.mcp_servers)
 
         yield
 

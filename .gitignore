@@ -228,3 +228,6 @@ data/
 
 # 编辑器配置是每个人各自的调试偏好，不进版本控制
 .vscode/
+
+# 扩展配置：模板入库、真文件忽略（与 config.yaml / .env 同一口径，见 ADR-0017）
+extensions_config.json

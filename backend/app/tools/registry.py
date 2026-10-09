@@ -36,7 +36,7 @@ def build_tools(app_config: AppConfig) -> list[BaseTool]:
         raise ValueError(_EMPTY_HINT)
 
     tools = [_resolve_entry(entry) for entry in app_config.tools]
-    _check_names(tools)
+    check_tool_names(tools)
     return tools
 
 
@@ -63,11 +63,16 @@ def _resolve_entry(entry: ToolConfig) -> BaseTool:
     return tool
 
 
-def _check_names(tools: list[BaseTool]) -> None:
+def check_tool_names(tools: list[BaseTool]) -> None:
     """重名与保留名在这里拦掉。
 
     ``create_agent`` 对重名是**静默接受**的（ADR-0011 记为已知盲区），症状是模型收到两份
     同名 schema、调用落到哪一个不确定。注册表是唯一能在启动期看见它的位置。
+
+    从 T13 起它**有两个调用时机**：启动期校验 `config.yaml` 里的业务工具（照旧，
+    :func:`build_tools` 里调），以及运行期校验并入 MCP 工具之后的整张表。所以它是公开的——
+    不过运行期那条路并不调它，理由见 ``app/gateway/mcp.py``：那里是**丢弃撞名的那一个**而不是
+    抛（MCP 的故障一律降级，不连累用户这一轮）。
     """
     seen: dict[str, str] = {}
     for tool in tools:
@@ -83,4 +88,4 @@ def _check_names(tools: list[BaseTool]) -> None:
         seen[tool.name] = type(tool).__name__
 
 
-__all__ = ["build_tools"]
+__all__ = ["build_tools", "check_tool_names"]

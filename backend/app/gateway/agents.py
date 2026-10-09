@@ -128,7 +128,12 @@ class AgentFactory:
         self.checkpointer = checkpointer
         self._model_factory: ModelFactory = model_factory if model_factory is not None else self._create_model
 
-    def lead(self, options: RunOptions | None = None) -> CompiledStateGraph:
+    def lead(
+        self,
+        options: RunOptions | None = None,
+        *,
+        extra_tools: Sequence[Any] = (),
+    ) -> CompiledStateGraph:
         """建主 Agent 的图，连带它专属的子 agent 图与 ``task`` 工具。
 
         子 agent 图**必须跟着一起重建**：``make_task_tool`` 把子图闭包进工具、工具再进
@@ -137,35 +142,53 @@ class AgentFactory:
 
         ``options`` 是这次运行的参数（思考档位等）。**一个模型实例同时喂给子图与主图**，
         所以子 agent 自动跟随同一份参数——将来若要拆开，记得两边都要动。
+
+        ``extra_tools`` 是**只有这一次运行才有**的工具（T13 起是 MCP 工具，连接与图同寿命）。
+        它必须同时进**两处**——子图与主图共享的是同一个 ``combined``：
+
+        - 喂子图的只有 ``_subagent_tools(combined)``（那里剔掉 ``present_files``）；
+        - 主图拿 ``[*combined, make_task_tool(subagent)]``。
+
+        **漏掉子图那一处不会报错**，只会让子 agent 少一批工具（就是 ``present_files``
+        当初踩的静默失效）。所以别在这里「顺手只改一处」。
         """
+        combined = [*self.tools, *extra_tools]
         model = self._model_factory(None, options)
         subagent = make_subagent_graph(
             model,
-            _subagent_tools(self.tools),
+            _subagent_tools(combined),
             system_prompt=SUBAGENT_PROMPT,
             checkpointer=self.checkpointer,
         )
         return make_lead_agent(
             model,
-            [*self.tools, make_task_tool(subagent)],
+            [*combined, make_task_tool(subagent)],
             system_prompt=SYSTEM_PROMPT,
             middleware=self._lead_middlewares(model),
             checkpointer=self.checkpointer,
         )
 
-    def plan_exec(self, options: RunOptions | None = None) -> PlanRoles:
+    def plan_exec(
+        self,
+        options: RunOptions | None = None,
+        *,
+        extra_tools: Sequence[Any] = (),
+    ) -> PlanRoles:
         """建 Plan-Exec 的三件套（封存路径）。
 
         与 :meth:`lead` 一样是每请求一次：执行单元在构造时建图并闭包进 ``execute``，
         所以「重建」只能通过重建执行单元本身完成。``options`` 同样一个实例喂给三者，
         与主路径保持同一口径。
+
+        ``extra_tools`` 只喂**执行单元**——planner / replanner 走的是 ``with_structured_output``，
+        它们不调工具。
         """
         model = self._model_factory(None, options)
         return PlanRoles(
             planner=make_planner(model, system_prompt=PLANNER_PROMPT),
             executor=make_react_executor(
                 model,
-                self.tools,
+                [*self.tools, *extra_tools],
                 system_prompt=EXECUTOR_PROMPT,
                 checkpointer=self.checkpointer,
             ),

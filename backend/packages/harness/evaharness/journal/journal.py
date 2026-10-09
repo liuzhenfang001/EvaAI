@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 
 from evaharness.agents.plan_exec.events import RunEndEvent, RunEvent, TaskEndEvent
 from evaharness.journal.compaction import MessageCompactor
@@ -95,14 +96,19 @@ async def journaled(events: AsyncIterator[RunEvent], journal: RunJournal) -> Asy
 
     tee 必须透明：下游（SSE）拿到的是**同一个对象、同一个顺序**——归并只发生在
     journal 自己的缓冲里，不回写事件。
+
+    ``aclosing`` 与 ``finally`` 是**两件事**（T13 补的）：`finally` 保证 journal 自己落盘，
+    但 `async for` 提前退出**不会**关上游生成器——而 T13 起上游挂着 MCP 连接这样的资源
+    （`AsyncExitStack` 在生成器体里）。少了 `aclosing`，客户端断开时那些连接永远不会被退出。
     """
     try:
-        async for event in events:
-            try:
-                await journal.record(event)
-            except Exception:
-                logger.warning("RunJournal 记账失败，跳过该事件", exc_info=True)
-            yield event
+        async with aclosing(events) as stream:
+            async for event in stream:
+                try:
+                    await journal.record(event)
+                except Exception:
+                    logger.warning("RunJournal 记账失败，跳过该事件", exc_info=True)
+                yield event
     finally:
         # 取消（BaseException）与异常都会走到这里，让断开前发生的事留下痕迹。
         try:

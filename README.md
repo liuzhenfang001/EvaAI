@@ -20,7 +20,7 @@ backend/
 └── tests/                         # 测试（含 test_harness_boundary.py 强制单向依赖）
 frontend/                          # Next.js 前端（会话栏 + 聊天区 + 浮动任务面板）
 config.yaml / config.example.yaml  # 主配置（版本化，$ENV 引用）
-extensions_config.json             # 扩展（MCP / skills / middlewares）
+extensions_config.json             # 扩展（MCP / skills / middlewares），模板同上
 .env                               # 密钥
 data/                              # 运行时数据（SQLite checkpoint + data/journal/<会话>/，已 gitignore）
 backend/.evaai/                    # 文件沙箱的运行期数据（input/output/workspace/skills-view，已 gitignore）
@@ -42,6 +42,7 @@ uv sync
 # 2. 准备配置
 cp ../config.example.yaml ../config.yaml
 cp ../.env.example ../.env        # 填入 DEEPSEEK_API_KEY
+cp ../extensions_config.example.json ../extensions_config.json
 
 # 3. 跑测试
 uv run pytest
@@ -92,11 +93,45 @@ tools:
 - **外网访问**：本机 `gh` 与 `npm install` 需走本地代理 `127.0.0.1:7890`。
 - **端口**：后端 8010、前端 3010——8001 / 3000 留给本机的参照项目 DeerFlow。前端访问后端的地址只写在 [frontend/src/core/api/config.ts](frontend/src/core/api/config.ts) 一处，要换地址就在 `frontend/.env.local` 里设 `NEXT_PUBLIC_API_URL`（Next.js 只从前端目录读环境文件，仓库根的 `.env` 是给后端用的）。
 
+## MCP（T13）
+
+在 `extensions_config.json` 的 `mcpServers` 里声明一个 server，它的工具就会出现在 agent 的工具表里：
+
+```json
+{
+  "mcpServers": {
+    "fs": {
+      "command": "npx.cmd",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/somewhere"]
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ..." }
+    }
+  }
+}
+```
+
+`transport` 可以不写——有 `command` 就是 `stdio`，有 `url` 就是 `http`（只支持这两种）。工具名一律是
+`mcp__<server>__<tool>`，所以**不会**和 `config.yaml` 里的业务工具撞名（那不是假想：官方 filesystem
+server 就有 `read_file` / `write_file`，正是我们的工具名）。
+
+几条要记住的行为：
+
+- **连接是每请求建的**：一次运行开一次、跑完就关。好处是 server 挂了下一请求自动恢复；代价是
+  stdio 每次都会 spawn 子进程，而且**有状态的 server 跨轮会话会归零**。
+- **一个 server 连不上不影响别的**，也不影响服务启动。启动期会探测一次并**响亮地警告**（探测会
+  spawn 子进程、首次 `npx` 还要下包，所以启动可能多等几秒），运行期只记日志。
+- **Windows 上要写 `npx.cmd`，不能写 `npx`**——PATH 里那个无扩展名的 `npx` 是 Git Bash 的 sh 脚本，
+  `CreateProcess` 会报 `WinError 193`，而那句话里没有一个字指向真正的原因。（我们也会兜一层：
+  命令解析到无扩展名的文件时会去找同名的 `.cmd`。）
+- 没配任何 server 时，这一整套代码**一行都不碰**——运行路径与 T12 之前完全一致。
+
 ## 四维度验收（T6）
 
 「可运行 / 可测试 / 可观测 / 可扩展」四条收口，各自这样验：
 
-- **可运行**：新机器按上方「快速开始」从零走一遍——`uv sync` → 复制 `config.example.yaml` / `.env.example` → `uv run pytest` → uvicorn → `npm install && npm run dev`。除了这两份模板，没有其它需要手动准备的东西。
+- **可运行**：新机器按上方「快速开始」从零走一遍——`uv sync` → 复制 `config.example.yaml` / `.env.example` / `extensions_config.example.json` → `uv run pytest` → uvicorn → `npm install && npm run dev`。除了这三份模板，没有其它需要手动准备的东西。
 - **可测试**：`uv run pytest` 内置覆盖率门槛（`--cov=evaharness --cov-fail-under=80`）——harness 层（框架层）覆盖率低于 80% 会直接红；当前 95%。要看缺哪几行，单跑 `uv run pytest --cov-report=term-missing`。
 - **可观测**：每次运行（默认 `/chat/stream` 与封存的 `/chat/plan/stream`）都经 `journaled` 把 `run_start → … → run_end` 的完整事件序列落进 RunJournal（`data/journal/<会话>/`），刷新/重启后按会话回放。
 - **可扩展**：加一个工具 = 写一个 `@tool`（或工厂）+ 在 `config.yaml` 的 `tools:` 加一项，不改任何框架代码——见上方「工具集」。
@@ -122,6 +157,7 @@ tools:
 - [x] **T10**（#10）助手回复渲染 Markdown：react-markdown + GFM + 代码高亮（ADR-0014）
 - [x] **T11**（#11）文件卡片与预览：`present_files` 工具 + 下载路由 + 右侧预览面板（ADR-0015）
 - [x] **T12**（#12）思考模式与动态思考深度：DeepSeek 适配器 + 每请求参数契约 + 档位选择器（ADR-0016）
+- [x] **T13**（#14）MCP 集成：`mcpServers` 配置 + 每请求连接（`langchain.mcp`）+ `mcp__<server>__<tool>` 命名（ADR-0017）
 
 **三期范围**（2026-10-08 起）见 [Issue #13](https://github.com/liuzhenfang001/EvaAI/issues/13)：docker 沙箱、skill 加载机制、MCP、Rag（+ llm wiki）。
 

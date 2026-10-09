@@ -247,3 +247,76 @@ async def test_memory_survives_a_rebuild():
 
     assert "我叫张三" in humans, "第一轮的用户消息不见了"
     assert "好的，张三。" in replies, "第一轮的助手回复不见了"
+
+
+# --------------------------------------------------------------------------- #
+# 只有这次运行才有的工具（T13 的 MCP 工具）
+# --------------------------------------------------------------------------- #
+
+
+@tool("biz")
+def _biz() -> str:
+    """一个业务工具。"""
+    return "x"
+
+
+@tool("mcp__fs__read_file")
+def _mcp_read(path: str) -> str:
+    """一个 MCP 工具（名字已经带好前缀，装配层给的名字就是这样）。"""
+    return path
+
+
+def test_extra_tools_reach_both_the_main_graph_and_the_subagent(monkeypatch):
+    """``extra_tools`` 必须同时进**两处**。
+
+    只进主图**不会报错**，只会让子 agent 少一批工具——那正是 ``present_files`` 当初踩的静默
+    失效。所以这条真正盯的是**子图那一半**：谁把 ``make_subagent_graph(model,
+    _subagent_tools(self.tools), ...)`` 改回只传 ``self.tools``，这里就红。
+    """
+    import app.gateway.agents as agents_module
+
+    seen: dict[str, list[str]] = {}
+    real_subagent = agents_module.make_subagent_graph
+    real_lead = agents_module.make_lead_agent
+
+    def spy_subagent(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
+        seen["subagent"] = [t.name for t in (tools or [])]
+        return real_subagent(model, tools, **kwargs)
+
+    def spy_lead(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
+        seen["lead"] = [t.name for t in (tools or [])]
+        return real_lead(model, tools, **kwargs)
+
+    monkeypatch.setattr(agents_module, "make_subagent_graph", spy_subagent)
+    monkeypatch.setattr(agents_module, "make_lead_agent", spy_lead)
+
+    _factory(tools=[_biz]).lead(extra_tools=[_mcp_read])
+
+    assert seen["subagent"] == ["biz", "mcp__fs__read_file"], "MCP 工具没进子图（静默失效）"
+    assert seen["lead"] == ["biz", "mcp__fs__read_file", TASK_TOOL_NAME]
+
+
+def test_extra_tools_still_skip_present_files_in_the_subagent():
+    """`_subagent_tools` 是**黑名单**——加了 extra_tools 之后它仍要剔掉 `present_files`。
+
+    这条是防「为了让 MCP 工具进子图，顺手把黑名单改成白名单」那种改法。
+    """
+    from app.gateway.agents import _subagent_tools
+
+    assert _subagent_tools([_biz, _mcp_read]) == [_biz, _mcp_read]
+
+
+def test_the_plan_executor_gets_the_extra_tools(monkeypatch):
+    """封存路径的执行单元也要拿到——两条路保持同一口径（ADR-0011）。"""
+    import app.gateway.agents as agents_module
+
+    seen: dict[str, list[str]] = {}
+    real = agents_module.make_react_executor
+
+    def spy(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
+        seen["executor"] = [t.name for t in (tools or [])]
+        return real(model, tools, **kwargs)
+
+    monkeypatch.setattr(agents_module, "make_react_executor", spy)
+    _factory(tools=[_biz]).plan_exec(extra_tools=[_mcp_read])
+    assert seen["executor"] == ["biz", "mcp__fs__read_file"]
