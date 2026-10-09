@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -175,6 +175,14 @@ async def run_lead_agent(
         if not pump.done():
             pump.cancel()
 
+    # 图可能**挂起**而不是跑完（`interrupt()`，目前唯一来源是 MCP elicitation）。那不是异常，
+    # 图安静地停下、把 `__interrupt__` 留在最后一次 values 快照里——不管它的话这一轮会以
+    # `completed` 收场，模型永远等不到工具结果，而用户只看到「莫名其妙没下文」。
+    pending = _pending_interrupt(last_state)
+    if pending is not None:
+        yield RunEndEvent(status="failed", error=pending)
+        return
+
     yield RunEndEvent(status="completed", output=final_text(last_state))
 
 
@@ -236,6 +244,55 @@ def _tool_event(payload: Any) -> RunEvent | None:
     except ValidationError:
         logger.warning("工具送出的文件载荷不合法，已忽略", exc_info=True)
         return None
+
+
+_GENERIC_INTERRUPT = (
+    "这一轮被 interrupt() 挂起，而没有任何东西会去应答它，所以无法继续。"
+    "（EvaAI 目前不实现 LangGraph 的中断/恢复，见 ADR-0017）"
+)
+
+
+def _pending_interrupt(state: Mapping[str, Any] | None) -> str | None:
+    """最后一次 values 快照里有没有**没人应答**的挂起；有就返回一句给人看的话。
+
+    为什么必须处理：`interrupt()` 不是异常，图完成后 `__interrupt__` 就留在 state 里，
+    而 :func:`~evaharness.agents.lead_agent.agent.run_lead_agent` 的收尾只读
+    ``final_text``——不在这里拦一下，整件事**没有任何痕迹**。
+
+    为什么放在 harness：这是一条**通用**规则（挂起 ≠ 跑完），不依赖具体是谁调的
+    ``interrupt()``。只有文案里那点 MCP 细节是尽人事的——认不出来也照样报，只是措辞通用。
+    """
+    if not isinstance(state, Mapping):
+        return None
+    interrupts = state.get("__interrupt__")
+    if not interrupts:
+        return None
+    return _describe_interrupt(interrupts)
+
+
+def _describe_interrupt(interrupts: Any) -> str:
+    """把挂起载荷翻译成一句用户看得懂的话。
+
+    ``langchain.mcp`` 的 payload 形状是 ``MCPElicitationInterrupt``
+    （``{"type": "mcp_elicitation", "tool_name": ..., "requests": [...]}``，见
+    :mod:`langchain.mcp.elicitation`）。认不出来的一律退回通用措辞——**不猜**。
+    """
+    for item in interrupts if isinstance(interrupts, Sequence) else [interrupts]:
+        value = getattr(item, "value", None)
+        if not isinstance(value, Mapping) or value.get("type") != "mcp_elicitation":
+            continue
+        tool = value.get("tool_name") or "某个 MCP 工具"
+        asked = [
+            request.get("message")
+            for request in value.get("requests") or []
+            if isinstance(request, Mapping) and request.get("message")
+        ]
+        question = f"它问的是：「{'；'.join(asked)}」" if asked else ""
+        return (
+            f"MCP 工具 {tool!r} 要求人工输入才能继续（elicitation），"
+            f"而 EvaAI 还没有应答它的链路，所以这一轮到此为止。{question}"
+        )
+    return _GENERIC_INTERRUPT
 
 
 __all__ = ["RunCancellation", "run_lead_agent"]

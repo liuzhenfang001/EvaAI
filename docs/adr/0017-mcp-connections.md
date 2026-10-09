@@ -128,6 +128,35 @@ T13 之前，agent 能做什么只由 `config.yaml` 的 `tools:` 决定——**�
   同一套措辞，但运行期**并不调它**（见决策 #8），所以它实际仍是启动期校验。
 - 前端**零改动**：运行期降级只记日志，用户可见面没有变化。
 
+## 补记：挂起要看得见
+
+`langchain.mcp` 默认把客户端武装成用 `interrupt()` 应答 elicitation，而 **`interrupt()` 不是
+异常**——图安静地停下，`__interrupt__` 留在最后一次 values 快照里。T13 合并时 runner 的收尾只读
+`final_text`，于是那一轮以 `completed` 收场：工具没有结果、模型永远等不到它、**没有任何痕迹**。
+就是本项目最反感的那种静默失效。
+
+实测（进程内 server + guard pattern）：
+
+- `__interrupt__` 确实出现在 `stream_mode="values"` 的载荷里。
+- **有没有 checkpointer 都会出现**——checkpointer 是**恢复**时才需要的。
+- 触发要两个条件同时成立：客户端被 adapter 武装（默认就真）**且**协商到 modern 协议
+  （≥ 2026-07-28）。老 server 退回普通 `call_tool`，不挂起。
+
+所以 runner 的收尾多一道：最后一次快照里若有未应答的挂起，就以 `RunEndEvent(status="failed")`
+收场，并把「谁在问什么」写进 error（前端 `applyRunEnd` 会渲染成「运行失败：…」）。
+规则是**通用**的（「挂起 ≠ 跑完」），只有文案里认了一下 `mcp_elicitation` 的形状，认不出来也照样
+报、只是措辞通用。
+
+**顺带实测了一件决定「将来要不要做恢复」的事：恢复跨进程也成立。** 状态在 checkpointer 里、不在
+MCP 连接里，所以「每请求建连」不妨碍恢复——真子进程起来、挂起、连接关掉（进程随之结束），换一个
+全新子进程带 `Command(resume=…)` 进去，工具照样跑完并返回结果。前提是那个 server 能凭
+`input_responses` 重算（或自己把状态编码进 `request_state`）；把待办存在进程内存里的 server 换进程
+就接不上。
+
+**真恢复不在本片范围**（端点 + 结构化事件 + 前端 + runner 的 `Command(resume=…)` 路径）。另有一个
+未解的问题记在这里：子 agent 图的坐标是**运行级**的，主 Agent 恢复时 `task` 工具会把整段子 agent
+重跑一遍、而那是新坐标——子 agent 里的 elicitation 能不能恢复，还不知道。
+
 ## 不做 / 范围外
 
 - **工具的延迟披露**（工具多了先搜工具再调）：不先接一个几十工具的 server 看看 token 到底涨多少，
