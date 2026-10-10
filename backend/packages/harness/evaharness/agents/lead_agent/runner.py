@@ -1,9 +1,8 @@
 """跑一次主 Agent，把图的输出翻成 RunEvent 流。
 
-与 :func:`evaharness.agents.plan_exec.run_plan_exec` 是同位角色（两条路径的入口），
-所以事件序列的首尾刻意保持一致：都以 ``run_start`` 开场、以终态事件收尾，中间是
-``messages`` 增量。区别只在于——这里**没有 plan、没有 task_start / task_end**，
-因为主 Agent 不拆任务；收尾是 :class:`RunEndEvent`。
+这是**唯一**的运行入口（Plan-Exec 那条在 T16 下线了，见 ADR-0021）。事件序列以
+``run_start`` 开场、以终态事件收尾，中间是 ``messages`` 增量——这里**没有 plan、
+没有 task_start / task_end**，因为主 Agent 不拆任务；收尾是 :class:`RunEndEvent`。
 
 三个必须一起给对的东西（错一个就是难查的怪症状）：
 
@@ -44,11 +43,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import ValidationError
 
-from evaharness.agents.lead_agent.agent import LEAD_LANE, LeadContext
-from evaharness.agents.lead_agent.custom_events import PRESENT_FILES_KIND
-from evaharness.agents.messages import final_text
-from evaharness.agents.options import RunOptions
-from evaharness.agents.plan_exec.events import (
+from evaharness.agents.events import (
     FilesPresentedEvent,
     MessagesEvent,
     PresentedFile,
@@ -56,6 +51,10 @@ from evaharness.agents.plan_exec.events import (
     RunEvent,
     RunStartEvent,
 )
+from evaharness.agents.lead_agent.agent import LEAD_LANE, LeadContext
+from evaharness.agents.lead_agent.custom_events import PRESENT_FILES_KIND
+from evaharness.agents.messages import final_text
+from evaharness.agents.options import RunOptions
 from evaharness.checkpoint import lead_thread_id
 
 logger = logging.getLogger(__name__)

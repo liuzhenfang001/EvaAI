@@ -12,16 +12,16 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
+from fakes import CallRecordingFake, ToolCapableFake, collect, fake_app_config
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from plan_exec_fakes import CallRecordingFake, ToolCapableFake, collect, fake_app_config
 
 from app.gateway.agents import AgentFactory
 from evaharness.agents.lead_agent import TASK_TOOL_NAME, run_lead_agent
-from evaharness.agents.options import RunOptions
 from evaharness.agents.middlewares import build_default_middlewares
+from evaharness.agents.options import RunOptions
 
 ModelFactory = Callable[[str | None], ToolCapableFake]
 
@@ -101,25 +101,13 @@ def test_the_subagent_never_gets_present_files():
     assert _subagent_tools([present_files, other]) == [other]
 
 
-def test_each_plan_exec_build_is_a_new_roles_bundle():
-    """三件套**必须一起换**：执行单元在装配期把图闭包进了 ``execute``。"""
-    factory = _factory()
-
-    first, second = factory.plan_exec(), factory.plan_exec()
-
-    assert first is not second
-    assert first.planner is not second.planner
-    assert first.executor is not second.executor
-    assert first.replanner is not second.replanner
-
-
 def test_each_build_asks_for_a_fresh_model():
     """模型也不能缓存——图的结构要能按请求变，模型是其中一半。"""
     names: list[str | None] = []
     factory = _factory(model_factory=_answering(names=names))
 
     factory.lead()
-    factory.plan_exec()
+    factory.lead()
 
     assert names == [None, None], "每次构建都该重新构造模型"
 
@@ -215,15 +203,6 @@ def test_the_summary_model_does_not_inherit_the_run_options():
     assert seen == [RunOptions(thinking="max"), None], "主模型带参数、摘要模型不带"
 
 
-def test_plan_exec_also_receives_the_run_options():
-    seen: list[RunOptions | None] = []
-    factory = _factory(model_factory=_answering("好的。", options=seen))
-
-    factory.plan_exec(RunOptions(thinking="low"))
-
-    assert seen == [RunOptions(thinking="low")]
-
-
 # --------------------------------------------------------------------------- #
 # 记忆不随重建丢失
 # --------------------------------------------------------------------------- #
@@ -259,6 +238,12 @@ async def test_memory_survives_a_rebuild():
 @tool("biz")
 def _biz() -> str:
     """一个业务工具。"""
+    return "x"
+
+
+@tool("bash")
+def _bash() -> str:
+    """假的 bash 工具：`_prompt` 只认名字，所以拼装那一段不需要真 docker。"""
     return "x"
 
 
@@ -321,7 +306,11 @@ def _skill():
 
 
 def _spy_system_prompts(monkeypatch) -> dict[str, str]:
-    """把四个 `make_*` 换成记录 `system_prompt` 的替身。"""
+    """把两个 `make_*` 换成记录 `system_prompt` 的替身。
+
+    T16 之前这里是四个（还有 Plan-Exec 的 planner 与执行单元）——那条路径下线后，
+    能调工具的图只剩主图与子图两张（ADR-0021）。
+    """
     import app.gateway.agents as agents_module
 
     seen: dict[str, str] = {}
@@ -334,28 +323,16 @@ def _spy_system_prompts(monkeypatch) -> dict[str, str]:
         seen["lead"] = kwargs.get("system_prompt") or ""
         return real_lead(model, tools, **kwargs)
 
-    def spy_executor(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
-        seen["executor"] = kwargs.get("system_prompt") or ""
-        return real_executor(model, tools, **kwargs)
-
-    def spy_planner(model, **kwargs):  # noqa: ANN001, ANN003
-        seen["planner"] = kwargs.get("system_prompt") or ""
-        return real_planner(model, **kwargs)
-
     real_subagent = agents_module.make_subagent_graph
     real_lead = agents_module.make_lead_agent
-    real_executor = agents_module.make_react_executor
-    real_planner = agents_module.make_planner
 
     monkeypatch.setattr(agents_module, "make_subagent_graph", spy_subagent)
     monkeypatch.setattr(agents_module, "make_lead_agent", spy_lead)
-    monkeypatch.setattr(agents_module, "make_react_executor", spy_executor)
-    monkeypatch.setattr(agents_module, "make_planner", spy_planner)
     return seen
 
 
-def test_the_skill_section_reaches_lead_subagent_and_executor(monkeypatch):
-    """技能清单必须同时进**三条** consumer——漏一处就是静默失效（`present_files` 的同款）。
+def test_the_skill_section_reaches_both_graphs(monkeypatch):
+    """技能清单必须同时进**两张**能调工具的图——漏一处就是静默失效（`present_files` 的同款）。
 
     这条盯的是「谁把某处改回 `system_prompt=BASE`」：那不会报错，只会让那张图看不见技能，而症状是
     「模型明明该会用那个技能，却像没听说过」——非常难查。
@@ -364,20 +341,10 @@ def test_the_skill_section_reaches_lead_subagent_and_executor(monkeypatch):
     factory = _factory(tools=[_biz], skills=[_skill()])
 
     factory.lead()
-    factory.plan_exec()
 
-    for where in ("subagent", "lead", "executor"):
+    for where in ("subagent", "lead"):
         assert "writer" in seen[where], f"{where} 那张图没拿到技能清单（静默失效）"
         assert "/skills/writer/SKILL.md" in seen[where], f"{where} 那张图没拿到技能的读取位置"
-
-
-def test_the_planner_does_not_get_the_skill_section(monkeypatch):
-    """planner 走结构化输出、不调工具，读不了技能——与 `extra_tools` 同口径，别顺手给它。"""
-    seen = _spy_system_prompts(monkeypatch)
-
-    _factory(tools=[_biz], skills=[_skill()]).plan_exec()
-
-    assert "writer" not in seen["planner"]
 
 
 def test_no_skills_leaves_every_prompt_byte_for_byte_alone(monkeypatch):
@@ -386,14 +353,37 @@ def test_no_skills_leaves_every_prompt_byte_for_byte_alone(monkeypatch):
     拼装代码顺手多加一个换行，就等于所有没写技能的部署都拿到一份新提示词——前缀缓存白废，而且
     `test_lead_agent` 里那两条断言 prompt 取值的测试会红。这条把「空就一字不差」钉住。
     """
-    from app.prompts import EXECUTOR_PROMPT, SUBAGENT_PROMPT, SYSTEM_PROMPT
+    from app.prompts import SUBAGENT_PROMPT, SYSTEM_PROMPT
 
     seen = _spy_system_prompts(monkeypatch)
-    factory = _factory(tools=[_biz])
 
-    factory.lead()
-    factory.plan_exec()
+    _factory(tools=[_biz]).lead()
 
     assert seen["lead"] == SYSTEM_PROMPT
     assert seen["subagent"] == SUBAGENT_PROMPT
-    assert seen["executor"] == EXECUTOR_PROMPT
+
+
+def test_the_bash_section_reaches_every_graph_that_can_call_it(monkeypatch):
+    """子图也拿得到同一套业务工具，所以它也会调 bash——提示词得跟上。
+
+    漏一处的症状与技能那条同款：那张图里的模型不知道自己在一个容器里，会拿宿主路径去试。
+    """
+    seen = _spy_system_prompts(monkeypatch)
+
+    _factory(tools=[_biz, _bash]).lead()
+
+    for where in ("subagent", "lead"):
+        assert "容器" in seen[where], f"{where} 那张图没拿到 bash 段（静默失效）"
+        assert "/evaai-check" not in seen[where]  # 哨兵是给我们看的，不该出现在提示词里
+
+
+def test_no_bash_tool_leaves_every_prompt_byte_for_byte_alone(monkeypatch):
+    """没启用 bash 的部署，提示词不该出现「容器」——否则模型会去调一个不存在的工具。"""
+    from app.prompts import SUBAGENT_PROMPT, SYSTEM_PROMPT
+
+    seen = _spy_system_prompts(monkeypatch)
+
+    _factory(tools=[_biz]).lead()
+
+    assert seen["lead"] == SYSTEM_PROMPT
+    assert seen["subagent"] == SUBAGENT_PROMPT

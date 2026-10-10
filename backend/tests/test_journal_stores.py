@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from evaharness.agents.plan_exec.events import MessagesEvent, RunStartEvent, TaskEndEvent
+from evaharness.agents.events import MessagesEvent, RunStartEvent, TaskEndEvent
 from evaharness.journal.stores import (
     JournalEntry,
     JsonlJournalStore,

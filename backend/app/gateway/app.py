@@ -1,7 +1,7 @@
 """EvaAI gateway：FastAPI 入口 + SSE 流式。
 
-默认路径是 **ReAct 主 Agent**（``/chat/stream``）；Plan-Exec 退到 ``/chat/plan/stream``
-封存（见 ADR-0010）。图与模型**不在这里建**——由
+只有一条路径：**ReAct 主 Agent**（``/chat/stream``）。Plan-Exec 在 T16 下线（ADR-0021）。
+图与模型**不在这里建**——由
 :class:`~app.gateway.agents.AgentFactory` 在每个请求里现建（见 ADR-0011）。
 
 启动：``uv run uvicorn app.gateway.app:app --port 8010``
@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
@@ -21,6 +22,8 @@ from app.gateway.mcp import load_mcp_tools
 from app.gateway.routers import chat, files, threads
 from app.gateway.run_registry import RunRegistry
 from app.gateway.skills import project_skills
+from app.tools import docker_sandbox
+from app.tools.bash import BASH_TOOL_NAME
 from app.tools.registry import build_tools
 from app.tools.sandbox import skills_view_root
 from evaharness.checkpoint.sqlite_saver import make_sqlite_checkpointer, prune_checkpoints
@@ -97,7 +100,14 @@ async def lifespan(app: FastAPI):
         app.state.journal_config = journal_config
         app.state.journal_store = make_journal_store(journal_config)
 
-        # 建图的唯一入口。它只持有参数、不持有图：每个请求调 lead() / plan_exec() 现建。
+        # docker 沙箱（T15）：只有 `tools:` 里真的装了 bash 才做这件事。启动期把「本部署建的、
+        # 但会话已经不在 journal 里」的容器清掉——与 checkpoint 清理同属「外部资源的收尾」，
+        # 所以失败也只警告、不拦启动。挂到 state 是为了让 DELETE 会话那条路由知道要不要收尾。
+        app.state.bash_enabled = any(tool.name == BASH_TOOL_NAME for tool in business_tools)
+        if app.state.bash_enabled:
+            await _reconcile_sandboxes(app.state.journal_store)
+
+        # 建图的唯一入口。它只持有参数、不持有图：每个请求调 lead() 现建。
         # MCP：**连一次、把工具列表留下来**（之后就再不连了——运行期零 I/O，连接推迟到模型真的调
         # 那个工具时，见 `app.gateway.mcp`）。它与技能投影同属「外部内容」，所以失败也只警告不拦
         # 启动；与 smoke build 的分工是「我们自己的装配错→拒绝启动，外部依赖不可用→只警告」。
@@ -127,7 +137,6 @@ async def lifespan(app: FastAPI):
         # checkpointer=None 是有意的：这一步只验装配，不该和 saver 的生命周期绑在一起。
         smoke = AgentFactory(app_config, all_tools, checkpointer=None, skills=skills)
         smoke.lead()
-        smoke.plan_exec()
 
         yield
 
@@ -141,6 +150,25 @@ async def _prune_checkpoints(saver, retention_days: int) -> None:
         return
     if deleted:
         logger.info("已清理 %d 个过期 checkpoint thread", deleted)
+
+
+async def _reconcile_sandboxes(journal_store) -> None:
+    """启动时清理孤儿沙箱容器（本部署建的、会话已不在 journal 里的那些）。
+
+    「会话在不在」以 journal 为准，不看 ``.evaai/user/{会话}/`` 目录——ADR-0012 记着
+    「删会话不删文件」这条债，那个判据几乎永不命中。
+
+    ``journal_store.threads()`` 失败就整个跳过，**不退化成按时间删**：删掉一个还在用的容器
+    比留几个孤儿糟得多。失败只记日志——清理不该拦着服务起来。
+    """
+    try:
+        live = {thread.thread_id for thread in await journal_store.threads()}
+        removed = await asyncio.to_thread(docker_sandbox.reconcile_orphans, live)
+    except Exception:
+        logger.warning("沙箱容器清理失败，跳过", exc_info=True)
+        return
+    if removed:
+        logger.info("已清理 %d 个孤儿沙箱容器", removed)
 
 
 def create_app() -> FastAPI:

@@ -14,14 +14,14 @@ import json
 
 import pytest
 
-from evaharness.agents.plan_exec.events import (
+from evaharness.agents.events import (
     MessagesEvent,
     PlanEvent,
+    PlanTask,
     SummaryEvent,
     TaskEndEvent,
     TaskStartEvent,
 )
-from evaharness.agents.plan_exec.schemas import PlanTask
 from evaharness.journal.compaction import (
     MessageCompactor,
     compact,

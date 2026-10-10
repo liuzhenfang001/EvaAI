@@ -94,9 +94,9 @@ def test_timestamp_returns_none_for_non_v6_input(value):
 
 @pytest.mark.asyncio
 async def test_make_sqlite_checkpointer_creates_tables_and_persists(tmp_path):
+    from fakes import ToolCapableFake
     from langchain.agents import create_agent
     from langchain_core.messages import AIMessage, HumanMessage
-    from plan_exec_fakes import ToolCapableFake
 
     db_path = tmp_path / "nested" / "checkpoints.sqlite"
 

@@ -12,8 +12,8 @@
 全部在 ``tmp_path`` 上跑，绝不碰真的 ``backend/.evaai``。
 """
 
-import pytest
 import httpx
+import pytest
 from fastapi import FastAPI
 
 from app.gateway.routers import files

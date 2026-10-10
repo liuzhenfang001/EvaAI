@@ -2,28 +2,33 @@
 
 最关键的一条是 :func:`test_replayed_messages_match_the_live_stream`——它把「实时
 看到的」与「回放拉回来的」摆在一起比对：回放若是另起一套实现，这条会先炸。
+
+事件源是**真的**：一次主 Agent 编排 + 一个假模型（T16 之前借的是 Plan-Exec 的假
+planner/executor，那条路径已下线，见 ADR-0021）。
 """
 
+import itertools
 import json
 
 import httpx
 import pytest
+from fakes import ToolCapableFake
 from fastapi import FastAPI
-from plan_exec_fakes import ExecutorStep, FakeExecutor, FakePlanner
+from langchain_core.messages import AIMessage
 
 from app.gateway.routers import threads
 from app.gateway.sse import sse_consumer
-from evaharness.agents.plan_exec import run_plan_exec
-from evaharness.agents.plan_exec.schemas import Plan, PlanTask
+from evaharness.agents.lead_agent import LEAD_LANE, make_lead_agent, run_lead_agent
 from evaharness.journal import RunJournal, journaled
 from evaharness.journal.stores import JsonlJournalStore, MemoryJournalStore
 
 THREAD = "th-1"
 
 
-def _client(store) -> httpx.AsyncClient:
+def _client(store, *, bash_enabled: bool = False) -> httpx.AsyncClient:
     app = FastAPI()
     app.state.journal_store = store
+    app.state.bash_enabled = bash_enabled
     app.include_router(threads.router)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
@@ -39,15 +44,18 @@ def _parse(frame):
     return event, data
 
 
-async def _run(store, request: str, *, thread_id: str = THREAD, run_id: str = "r-1", messages: tuple = ()):
-    """跑一次真实编排（假 planner/executor）并把事件流同时喂给 store 与 SSE。"""
-    plan = Plan(tasks=[PlanTask(id="t1", description="查时间")])
-    executor = FakeExecutor({"t1": ExecutorStep(messages=messages, output="现在是 18:04")})
+async def _run(store, request: str, *, thread_id: str = THREAD, run_id: str = "r-1", reply: str = "现在是 18:04"):
+    """跑一次真实编排（主 Agent + 假模型）并把事件流同时喂给 store 与 SSE。
+
+    ``reply`` 是这次回复的正文。假模型（``GenericFakeChatModel``）按**空白**切块流式输出，
+    所以带空格的一句会产出多条 ``messages`` 增量——归并与回放那几条测试要的就是这个
+    （原先靠 Plan-Exec 的执行单元替身喂出多条增量，T16 下线后改走这条真路径）。
+    """
+    model = ToolCapableFake(messages=itertools.cycle([AIMessage(content=reply)]))
+    agent = make_lead_agent(model, [], system_prompt="你是助手")
 
     async def events():
-        async for event in run_plan_exec(
-            request, planner=FakePlanner(plan), executor=executor, thread_id=thread_id, run_id=run_id
-        ):
+        async for event in run_lead_agent(request, agent=agent, thread_id=thread_id, run_id=run_id):
             yield event
 
     journal = RunJournal(store, thread_id)
@@ -106,7 +114,7 @@ async def test_two_runs_in_one_thread_are_counted_and_the_last_is_reported():
 @pytest.mark.asyncio
 async def test_messages_projection_returns_only_the_message_bucket():
     store = MemoryJournalStore()
-    await _run(store, "现在几点？", messages=("现", "在", "18:04"))
+    await _run(store, "现在几点？", reply="现 在 18:04")
 
     async with _client(store) as client:
         entries = (await client.get(f"/threads/{THREAD}/messages")).json()
@@ -114,27 +122,27 @@ async def test_messages_projection_returns_only_the_message_bucket():
     types = [entry["event"]["type"] for entry in entries]
     assert types[0] == "run_start", "用户的请求是对话的第一条"
     assert "plan" not in types and "task_start" not in types and "summary" not in types
-    assert set(types) <= {"run_start", "messages", "task_end"}
+    assert set(types) <= {"run_start", "messages", "run_end"}
 
 
 @pytest.mark.asyncio
 async def test_messages_projection_reflects_compaction():
     """落盘已归并，读路径不必再加工——三条增量变一条。"""
     store = MemoryJournalStore()
-    await _run(store, "现在几点？", messages=("现", "在", "18:04"))
+    await _run(store, "现在几点？", reply="现 在 18:04")
 
     async with _client(store) as client:
         entries = (await client.get(f"/threads/{THREAD}/messages")).json()
 
     texts = [e["event"]["chunk"]["content"] for e in entries if e["event"]["type"] == "messages"]
-    assert texts == ["现在18:04"]
+    assert texts == ["现 在 18:04"]
 
 
 @pytest.mark.asyncio
 async def test_messages_projection_spans_runs_oldest_first():
     store = MemoryJournalStore()
-    await _run(store, "第一句", run_id="r-1", messages=("甲",))
-    await _run(store, "第二句", run_id="r-2", messages=("乙",))
+    await _run(store, "第一句", run_id="r-1", reply="甲")
+    await _run(store, "第二句", run_id="r-2", reply="乙")
 
     async with _client(store) as client:
         entries = (await client.get(f"/threads/{THREAD}/messages")).json()
@@ -147,7 +155,7 @@ async def test_messages_projection_spans_runs_oldest_first():
 async def test_replayed_messages_match_the_live_stream():
     """回放拉回来的对话必须与实时帧逐字一致（归并是唯一允许的差异）。"""
     store = MemoryJournalStore()
-    frames = await _run(store, "现在几点？", messages=("现", "在", "18:04"))
+    frames = await _run(store, "现在几点？", reply="现 在 18:04")
 
     async with _client(store) as client:
         entries = (await client.get(f"/threads/{THREAD}/messages")).json()
@@ -190,19 +198,19 @@ def _text_per_task(events) -> dict[str, str]:
 async def test_thread_journal_returns_the_full_trace():
     """面板要的是**全部**事件——它得靠 messages 里的工具行与正文才能重建。"""
     store = MemoryJournalStore()
-    await _run(store, "现在几点？", messages=("甲",))
+    await _run(store, "现在几点？", reply="甲")
 
     async with _client(store) as client:
         entries = (await client.get(f"/threads/{THREAD}/journal")).json()
 
     types = [entry["event"]["type"] for entry in entries]
-    assert types == ["run_start", "plan", "task_start", "messages", "task_end", "summary"]
+    assert types == ["run_start", "messages", "run_end"], "主 Agent 不拆任务：没有 plan / task_* / summary"
 
 
 @pytest.mark.asyncio
 async def test_trace_projection_is_a_superset_of_the_message_projection():
     store = MemoryJournalStore()
-    await _run(store, "现在几点？", messages=("甲",))
+    await _run(store, "现在几点？", reply="甲")
 
     async with _client(store) as client:
         trace = (await client.get(f"/threads/{THREAD}/journal")).json()
@@ -261,6 +269,55 @@ async def test_delete_is_idempotent():
 
 
 # --------------------------------------------------------------------------- #
+# 连带删掉沙箱容器（T15）
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_delete_also_removes_the_sessions_sandbox_container(monkeypatch):
+    """容器是这个会话的**运行状态**——会话没了，它就该跟着走。"""
+    seen: list[str] = []
+    store = MemoryJournalStore()
+    await _run(store, "要删掉的")
+    monkeypatch.setattr(threads.docker_sandbox, "remove_session_container", seen.append)
+
+    async with _client(store, bash_enabled=True) as client:
+        assert (await client.delete(f"/threads/{THREAD}")).status_code == 204
+
+    assert seen == [THREAD]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_container_removal_still_returns_204(monkeypatch):
+    """收尾失败不该让调用方以为没删掉——会话本身确实已经没了。"""
+
+    def boom(_session):  # noqa: ANN001
+        raise RuntimeError("docker 不见了")
+
+    store = MemoryJournalStore()
+    await _run(store, "要删掉的")
+    monkeypatch.setattr(threads.docker_sandbox, "remove_session_container", boom)
+
+    async with _client(store, bash_enabled=True) as client:
+        assert (await client.delete(f"/threads/{THREAD}")).status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_delete_never_touches_docker_without_bash(monkeypatch):
+    """没启用 bash 的部署没有容器可删，一个 docker 命令都不该发。"""
+
+    def boom(_session):  # noqa: ANN001
+        raise AssertionError("没启用 bash 却碰了 docker")
+
+    store = MemoryJournalStore()
+    await _run(store, "要删掉的")
+    monkeypatch.setattr(threads.docker_sandbox, "remove_session_container", boom)
+
+    async with _client(store) as client:
+        assert (await client.delete(f"/threads/{THREAD}")).status_code == 204
+
+
+# --------------------------------------------------------------------------- #
 # 错误路径
 # --------------------------------------------------------------------------- #
 
@@ -286,8 +343,8 @@ async def test_illegal_thread_id_returns_404_not_500(tmp_path):
 async def test_thread_journal_concatenates_runs_oldest_first():
     """一次拉全整段会话——前端就靠这一份事件流重建对话与面板。"""
     store = MemoryJournalStore()
-    await _run(store, "第一句", run_id="r-1", messages=("甲",))
-    await _run(store, "第二句", run_id="r-2", messages=("乙",))
+    await _run(store, "第一句", run_id="r-1", reply="甲")
+    await _run(store, "第二句", run_id="r-2", reply="乙")
 
     async with _client(store) as client:
         entries = (await client.get(f"/threads/{THREAD}/journal")).json()
@@ -300,8 +357,8 @@ async def test_thread_journal_concatenates_runs_oldest_first():
 async def test_preview_summarizes_the_latest_assistant_text():
     """列表上「这个会话聊到哪了」——取的是 message 桶里的最后一段正文。"""
     store = MemoryJournalStore()
-    await _run(store, "第一句", run_id="r-1", messages=("旧",))
-    await _run(store, "第二句", run_id="r-2", messages=("最新",))
+    await _run(store, "第一句", run_id="r-1", reply="旧")
+    await _run(store, "第二句", run_id="r-2", reply="最新")
 
     async with _client(store) as client:
         [thread] = (await client.get("/threads")).json()
@@ -313,12 +370,12 @@ async def test_preview_summarizes_the_latest_assistant_text():
 async def test_jsonl_store_survives_a_fresh_client(tmp_path):
     """换一个 store 实例仍读得到——这条是「重启后端后对话还在」的服务端证据。"""
     store = JsonlJournalStore(tmp_path / "journal")
-    await _run(store, "重启前问的", messages=("甲",))
+    await _run(store, "重启前问的", reply="甲")
 
     async with _client(JsonlJournalStore(tmp_path / "journal")) as client:
         threads_payload = (await client.get("/threads")).json()
         entries = (await client.get(f"/threads/{THREAD}/messages")).json()
 
     assert threads_payload[0]["title"].startswith("重启前问的")
-    assert [e["event"]["type"] for e in entries] == ["run_start", "messages", "task_end"]
-    assert _text_per_task([e["event"] for e in entries if e["event"]["type"] == "messages"]) == {"t1": "甲"}
+    assert [e["event"]["type"] for e in entries] == ["run_start", "messages", "run_end"]
+    assert _text_per_task([e["event"] for e in entries if e["event"]["type"] == "messages"]) == {LEAD_LANE: "甲"}

@@ -16,7 +16,7 @@ import dataclasses
 import json
 
 import pytest
-from tool_fakes import PLAN_EXEC_CONTEXT, WORKSPACE_CONTEXT, fake_runtime
+from tool_fakes import COORDINATE_CONTEXT, WORKSPACE_CONTEXT, fake_runtime
 
 from app.tools import present_files as module
 from app.tools.sandbox import PathNotAllowedError
@@ -94,12 +94,12 @@ def test_an_unknown_extension_leaves_mime_empty(_sandbox_root):
     assert sent[0]["files"][0]["mime"] is None
 
 
-def test_a_plan_exec_shaped_context_also_works(_sandbox_root):
+def test_a_coordinate_shaped_context_also_works(_sandbox_root):
     """会话 id 有两种上下文形状（``LeadContext`` 对象 / ``{坐标}`` dict），工具都得认。"""
     _write(_sandbox_root, "output", "a.md")
 
     sent: list = []
-    _call(["/output/a.md"], sent, context=PLAN_EXEC_CONTEXT)
+    _call(["/output/a.md"], sent, context=COORDINATE_CONTEXT)
 
     assert sent[0]["files"][0]["path"] == "/output/a.md"
 

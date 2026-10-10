@@ -84,3 +84,22 @@ tools:
     use: app.tools.web:make_web_fetch
     timeout: 10
     use_readability: false  # 打开会走 Node/Readability.js；本机缺它的 node_modules，会触发 npm install
+
+  # bash（T15）：在**本会话私有**的 Linux 容器里执行 shell 命令（见 docs/adr/0019）。
+  #
+  # **模板里默认注释掉**：它要求本机装好 Docker Desktop 并**预先拉取**镜像。启用了却用不了
+  # 的话，服务会**拒绝启动**（不静默降级）——所以没装 Docker 的机器不要取消注释。
+  #
+  # 容器内的 /workspace、/output、/input、/skills 与文件工具看到的是**同一份文件**，
+  # 其中 /input 与 /skills 由 docker 强制只读。容器每会话一个、会一直留着（装过的包在会话里
+  # 留存），容器名是 evaai-<会话 id>。
+  #
+  # - name: bash
+  #   use: app.tools.bash:make_bash
+  #   # 也可以用 tag：enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0
+  #   image: sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7
+  #   network: bridge     # bridge（默认）= 容器能出网；none = 断网
+  #   timeout: 60         # 单条命令的秒数上限（容器内 timeout 是真边界，客户端的只是兜底）
+  #   memory: 1g          # 内存上限；空串表示不设（与 swap 等值，不许靠 swap 吃穿上限）
+  #   cpus: "2"           # CPU 上限；空串表示不设
+  #   pids_limit: 512     # 进程数上限，防 fork 炸弹

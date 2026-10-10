@@ -16,10 +16,10 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 import pytest
+from fakes import collect
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-from plan_exec_fakes import collect
 
 from evaharness.agents.lead_agent import LeadContext, run_lead_agent
 from evaharness.checkpoint import lead_thread_id

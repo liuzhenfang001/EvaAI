@@ -1,6 +1,6 @@
 # EvaAI
 
-企业级可用标准的**个人 AI 助手**。顶层是一个 **ReAct 主 Agent**（`lead agent`）——用户直接与它对话，它自己决定调什么工具、要不要派子 agent；**Plan-Exec 编排**仍然保留但已封存（见 [ADR-0010](docs/adr/0010-lead-agent-as-default-path.md)）。
+企业级可用标准的**个人 AI 助手**。顶层是一个 **ReAct 主 Agent**（`lead agent`）——用户直接与它对话，它自己决定调什么工具、要不要派子 agent。（曾经的 Plan-Exec 编排在 T16 下线，见 [ADR-0021](docs/adr/0021-plan-exec-retirement.md)。）
 
 核心是 **harness 工程思想**：框架层（harness）与业务层（app）分离，harness 不关注业务、只为业务提供可扩展性支持。整体层级与框架严格参照本地参考项目 DeerFlow，但针对「个人助手、本地部署」大幅裁剪。
 
@@ -10,7 +10,6 @@
 backend/
 ├── packages/harness/evaharness/   # 框架层（业务无关，可插拔机制）
 │   ├── agents/lead_agent/         # ★ 主 Agent：ReAct 图 + 事件流 + 子 agent 派发
-│   ├── agents/plan_exec/          # Plan-Exec 编排（封存；路由 /chat/plan/stream）
 │   ├── checkpoint/                # checkpoint 持久化（SQLite）与保留策略
 │   ├── journal/                   # RunJournal + 可插拔 store（内存 / JSONL）
 │   └── agents/                    # ReAct 执行器装配 + 治理中间件
@@ -32,6 +31,8 @@ backend/.evaai/                    # 文件沙箱的运行期数据（input/outp
 - Python >= 3.12
 - [uv](https://docs.astral.sh/uv/)（依赖与虚拟环境管理）
 - Node.js >= 20 与 npm（前端）
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/)**（可选）**——只有要用 `bash`
+  工具（docker 沙箱，T15）才需要；不装的话照「快速开始」走，服务照常起
 
 ## 快速开始
 
@@ -58,8 +59,6 @@ cd ../frontend && npm install && npm run dev
 浏览器打开 <http://localhost:3010>，发「现在几点？」应看到：**直接流式吐字**，没有「规划中…」的等待；连问「我叫什么」会发现它记得上一轮说过的名字。左侧会话栏可开新对话、在历史对话间切换、重命名或删除；**刷新页面或重启后端后，当前会话的整段对话都会重建**（记录落在 `data/journal/<会话>/`）。
 
 助手气泡把 Agent 的多轮过程**折起来**：当前那一轮灰色实时打字，工具结果回来、下一轮开始时自动收起成「第 N 步 · 调用了什么」的一行（点得开）；最终回复正常显示，与过程一眼分得开。用户消息右对齐、助手消息左对齐，气泡宽度随文本长短变化。右侧的任务编排面板**暂时下线**（组件与样式都还在，由 `page.tsx` 的 `SHOW_TASK_PANEL` 开关控制）。
-
-想跑封存的 Plan-Exec 就用它的路由：`POST /chat/plan/stream`，事件流仍是 `run_start` → `plan` → `task_start` → … → `summary`。
 
 ## 开发约定
 
@@ -156,13 +155,40 @@ description: 把这一周做过的事整理成一份能直接发出去的周报�
   `config.yaml` 的工具那样「写错就拒绝启动」——但也不会静默跳过。
 - 想停用某个技能就把它的目录移走；`extensions_config.json` 的 `skills` 那一节目前**没有用途**。
 
+## docker 沙箱（T15）
+
+给模型一个能跑命令的 Linux 容器。**默认关闭**——`config.example.yaml` 里 bash 那一条是注释掉的，
+要用得先装 [Docker Desktop](https://www.docker.com/products/docker-desktop/) 并准备好镜像：
+
+```bash
+docker pull enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0
+```
+
+然后把模板里 bash 那一段的注释去掉（镜像、网络、超时、内存、CPU、进程数都是它的旋钮）。
+见 [ADR-0019](docs/adr/0019-docker-sandbox.md)。
+
+**它是怎么和文件工具对上号的**：容器里那四个目录**就是**虚拟路径本身（`/workspace`、`/output`、
+`/input`、`/skills`），宿主目录经 bind mount 映射进去。所以容器里 `echo hi > /workspace/a.txt`，
+文件工具 `read_file /workspace/a.txt` 立刻读得到——**是同一个文件**，不是两套坐标系靠约定对齐。
+`/input` 与 `/skills` 的只读到这里由 **docker 强制**（容器里 `touch /input/x` 会真的失败）。
+
+几条要记住的行为：
+
+- **每会话一个长驻容器**，名字 `evaai-<会话 id>`；装过的包在会话里留存。`DELETE /threads/{id}`
+  会连带删掉它，后端启动时也会清掉「会话已不在 journal 里」的孤儿容器。
+- **容器内那四个目录之外的东西会丢**（`/tmp`、装的包、后台进程）：文件工具看不见，容器重建就没了。
+  要留下的东西写 `/workspace` 或 `/output`。
+- **每次 `bash` 调用是全新 shell**：`cd`、`export` 不跨调用。
+- **命令的非零退出码是正常返回**（形如 `[exit code 1]`），只有 docker 这一层失败才是工具错误。
+- 启用了 bash 而 docker / 镜像不可用 → **服务拒绝启动**，并在日志里给出可执行的提示。
+
 ## 四维度验收（T6）
 
 「可运行 / 可测试 / 可观测 / 可扩展」四条收口，各自这样验：
 
 - **可运行**：新机器按上方「快速开始」从零走一遍——`uv sync` → 复制 `config.example.yaml` / `.env.example` / `extensions_config.example.json` → `uv run pytest` → uvicorn → `npm install && npm run dev`。除了这三份模板，没有其它需要手动准备的东西。
 - **可测试**：`uv run pytest` 内置覆盖率门槛（`--cov=evaharness --cov-fail-under=80`）——harness 层（框架层）覆盖率低于 80% 会直接红；当前 95%。要看缺哪几行，单跑 `uv run pytest --cov-report=term-missing`。
-- **可观测**：每次运行（默认 `/chat/stream` 与封存的 `/chat/plan/stream`）都经 `journaled` 把 `run_start → … → run_end` 的完整事件序列落进 RunJournal（`data/journal/<会话>/`），刷新/重启后按会话回放。
+- **可观测**：每次运行（`/chat/stream`）都经 `journaled` 把 `run_start → … → run_end` 的完整事件序列落进 RunJournal（`data/journal/<会话>/`），刷新/重启后按会话回放。
 - **可扩展**：加一个工具 = 写一个 `@tool`（或工厂）+ 在 `config.yaml` 的 `tools:` 加一项，不改任何框架代码——见上方「工具集」。
 
 ## 文档
@@ -175,20 +201,22 @@ description: 把这一周做过的事整理成一份能直接发出去的周报�
 工作按端到端打穿的**垂直切片**交付：
 
 - [x] **T1**（#1）端到端最小聊天链路：浏览器发消息 → 流式回复 + 调用一个纯函数工具
-- [x] **T2**（#2）Plan-Exec 编排（单任务）：planner 出计划 → ReAct 执行单元逐个执行 → replanner 判定 → 汇总，全程可在计划面板观察
+- [x] ~~**T2**（#2）Plan-Exec 编排（单任务）：planner 出计划 → ReAct 执行单元逐个执行 → replanner 判定 → 汇总，全程可在计划面板观察~~（**T16 已下线**）
 - [x] **T3**（#4）subagent 并行 + 运行时间线：无依赖任务按批并行派发（ADR-0008），RunJournal 落盘并支持按 run_id 回放
 - [x] **T4**（#3）工具集：文件读写与检索（六个工具，跑在虚拟路径的沙箱里）+ web_search/web_fetch + 配置驱动的工具注册表——加一个工具只加文件与配置，不改框架（ADR-0012）
 - [x] **T5**（#5）中断与恢复
 - [x] **T6**（#6）四维度验收收口
 - [x] **T7**（#7）会话与对话历史：多会话新建/切换/重命名/删除，整段对话落盘并可在刷新/重启后重建（ADR-0009）
-- [x] **T8**（#8）ReAct 主 Agent 取代 Plan-Exec 成为默认路径：直答 + 多轮记忆 + 会话摘要压缩 + 子 agent 派发；Plan-Exec 退到 `/chat/plan/stream` 封存（ADR-0010）
+- [x] **T8**（#8）ReAct 主 Agent 取代 Plan-Exec 成为默认路径：直答 + 多轮记忆 + 会话摘要压缩 + 子 agent 派发；Plan-Exec 退到封存路径（ADR-0010，T16 已整体下线，见 ADR-0021）
 - [x] **T9**（#9）agent 每请求构建：消除单例中间件的并发洞，并把「每请求配置」的门打开（ADR-0011）
 - [x] **T10**（#10）助手回复渲染 Markdown：react-markdown + GFM + 代码高亮（ADR-0014）
 - [x] **T11**（#11）文件卡片与预览：`present_files` 工具 + 下载路由 + 右侧预览面板（ADR-0015）
 - [x] **T12**（#12）思考模式与动态思考深度：DeepSeek 适配器 + 每请求参数契约 + 档位选择器（ADR-0016）
 - [x] **T13**（#14）MCP 集成：`mcpServers` 配置 + 每请求连接（`langchain.mcp`）+ `mcp__<server>__<tool>` 命名（ADR-0017）
 - [x] **T14**（#15）skill 加载机制：仓库 `skills/` 源目录 → 启动期镜像到 `/skills` → 提示词只列清单（ADR-0018）
+- [x] **T15**（#16）docker 沙箱：每会话一个长驻容器 + `bash` 工具，四个挂载点原样 bind 进容器（容器内路径就是虚拟路径），`/input` 与 `/skills` 的只读改由 docker 强制（ADR-0019）
+- [x] **T16**（#17）Plan-Exec 下线：产线删除、事件契约搬到 `agents/events.py`、前端与 journal 契约保持以支持老数据回放（ADR-0021）
 
-**三期范围**（2026-10-08 起）见 [Issue #13](https://github.com/liuzhenfang001/EvaAI/issues/13)：docker 沙箱、skill 加载机制、MCP、Rag（+ llm wiki）。
+**三期范围**（2026-10-08 起）见 [Issue #13](https://github.com/liuzhenfang001/EvaAI/issues/13)：~~docker 沙箱~~（T15）、~~skill 加载机制~~（T14）、~~MCP~~（T13）、Rag（+ llm wiki）。
 
 已完成的水平里程碑：M0 脚手架 + 边界测试 + 配置加载 + 反射加载；M1 模型工厂 + ReAct 执行器（LangChain `create_agent` + 6 个硬核中间件）。

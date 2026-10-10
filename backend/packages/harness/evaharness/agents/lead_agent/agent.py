@@ -1,14 +1,13 @@
 """lead agent（主 Agent）的图装配。
 
-T8 起 EvaAI 的默认路径是一个 **ReAct 主 Agent**，不再是 Plan-Exec 编排。它直接用
-LangChain 的 :func:`~langchain.agents.create_agent` 编译成 LangGraph 图，**不走**
-:func:`evaharness.agents.react.make_react_agent`。
+T8 起 EvaAI 的路径是一个 **ReAct 主 Agent**，不再是 Plan-Exec 编排；那条路径在 T16
+彻底下线（见 ADR-0021）。这里的图直接用 LangChain 的
+:func:`~langchain.agents.create_agent` 编译成 LangGraph 图。
 
-为什么另起一套而不是复用那个薄封装：两者的差异是**真实的**，不是参数不同——
-lead 有 ``context_schema``（子 agent 派发要靠它取运行身份）、有会话级 checkpoint
-坐标（记忆的来源）、中间件链里多一道摘要压缩；而 Plan-Exec 的执行单元是「一次任务、
-一个独立坐标、没有记忆」。共用一个封装只会让两边互相牵制。``make_react_agent``
-原样留给封存的 Plan-Exec 用。
+它带三样 Plan-Exec 的执行单元没有的东西：``context_schema``（子 agent 派发要靠它取运行
+身份）、会话级 checkpoint 坐标（记忆的来源）、中间件链里多一道摘要压缩。当年为此没有把两者
+共用一个薄封装——差异是真实的，不是参数不同；那个薄封装（``agents.react``）随 Plan-Exec
+一起删掉了。
 """
 
 from __future__ import annotations

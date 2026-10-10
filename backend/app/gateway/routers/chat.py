@@ -1,18 +1,10 @@
 """chat 流式端点（SSE）。
 
-两条路径，同一套外壳：
+只有一条路径：``/chat/stream`` 跑 **ReAct 主 Agent**（T8 起的默认路径）。
+曾经的 ``/chat/plan/stream``（Plan-Exec 封存路径）在 T16 下线了，见 ADR-0021——
+它的**事件类型**还留在 :mod:`evaharness.agents.events` 里，只为解析老 journal。
 
-===============  ==========================  ===================================
-路径              跑什么                       说明
-===============  ==========================  ===================================
-``/chat/stream``  **ReAct 主 Agent**（默认）     T8 起的默认路径
-``/chat/plan/stream``  Plan-Exec 编排           封存；路由与测试都保留，没有 UI 入口
-===============  ==========================  ===================================
-
-封存不等于放弃——Plan-Exec 将来要以「主 Agent 的一个子能力」回来（见 ADR-0010），
-所以它的路由与测试原样留着，只是不再是默认。
-
-两条路由都在**请求路径上现建图**（`state.agent_factory`，见 ADR-0011），而不是共享
+这条路由在**请求路径上现建图**（`state.agent_factory`，见 ADR-0011），而不是共享
 lifespan 建好的那一张：中间件的追踪状态因此不跨请求。
 
 **建图在这里、`StreamingResponse` 之前**（ADR-0011 的取舍原样保留）：构造错误因此表现为 500，
@@ -41,10 +33,9 @@ from pydantic import BaseModel
 
 from app.gateway.sse import sse_consumer
 from app.tools.sandbox import ensure_session_dirs
+from evaharness.agents.events import RunEvent
 from evaharness.agents.lead_agent import RunCancellation, run_lead_agent
 from evaharness.agents.options import RunOptions, ThinkingLevel
-from evaharness.agents.plan_exec import run_plan_exec
-from evaharness.agents.plan_exec.events import RunEvent
 from evaharness.journal import RunJournal, journaled, validate_id
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -132,32 +123,6 @@ def _make_cancellation(state, run_id: str) -> RunCancellation:
     return RunCancellation(
         register=lambda task: registry.register(run_id, task),
         unregister=lambda: registry.unregister(run_id),
-    )
-
-
-@router.post("/plan/stream")
-async def plan_stream(body: ChatRequest, request: Request) -> StreamingResponse:
-    """Plan-Exec 封存路径：planner → 执行单元 → replanner → 汇总。
-
-    三件套同样是每请求现建，且**必须一起换**——执行单元在装配期把图闭包进了 ``execute``，
-    只换 planner / replanner 等于没换。
-    """
-    state = request.app.state
-    thread_id = _resolve_thread_id(body)
-    ensure_session_dirs(thread_id)
-    run_id = uuid4().hex[:12]
-    roles = state.agent_factory.plan_exec(RunOptions(thinking=body.thinking))
-    return _stream(
-        request,
-        run_plan_exec(
-            body.content,
-            planner=roles.planner,
-            executor=roles.executor,
-            replanner=roles.replanner,
-            run_id=run_id,
-            thread_id=thread_id,
-        ),
-        thread_id,
     )
 
 

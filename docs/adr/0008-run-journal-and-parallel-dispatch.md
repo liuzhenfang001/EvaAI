@@ -1,5 +1,7 @@
 # 并行按批派发；RunJournal 是事件流的 sink，不是 callback handler
 
+> **2026-10-10 部分作废**：Plan-Exec 在 T16 下线（见 [ADR-0021](0021-plan-exec-retirement.md)），「按批并行派发 plan 任务」那一半（`plan_exec/fanout.py`）随之删除。**RunJournal 那一半照旧且更重要了**——它现在是主 Agent 唯一的事件归档通道。
+
 T3（Issue #4）要三件事：多个无依赖子任务并行执行、RunJournal 记录完整 RunEvent 供前端时间线回放、子任务结果合并后汇总返回（这条 T2 已具备）。本 ADR 记录这次落地的几个判断。
 
 ## 决策

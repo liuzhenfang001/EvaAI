@@ -8,14 +8,15 @@ import asyncio
 from typing import Any
 
 import pytest
+from fakes import CallRecordingFake, StreamToolFake, ToolCapableFake, collect, echo
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from plan_exec_fakes import CallRecordingFake, StreamToolFake, ToolCapableFake, collect, echo
 
+from evaharness.agents.events import RunEvent
 from evaharness.agents.lead_agent import (
     DEFAULT_LEAD_PROMPT,
     LEAD_LANE,
@@ -28,7 +29,6 @@ from evaharness.agents.lead_agent import (
     run_lead_agent,
 )
 from evaharness.agents.middlewares import StepBudgetMiddleware, build_default_middlewares
-from evaharness.agents.plan_exec.events import RunEvent
 from evaharness.config.app_config import SummarizationConfig
 
 

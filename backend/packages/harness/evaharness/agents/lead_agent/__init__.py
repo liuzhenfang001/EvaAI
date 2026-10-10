@@ -1,7 +1,7 @@
-"""lead agent：EvaAI 的主 Agent（ReAct），默认路径。
+"""lead agent：EvaAI 的主 Agent（ReAct），**唯一**的顶层路径。
 
-T8 之前顶层是 Plan-Exec 编排图；现在默认是一个直接用 ``create_agent`` 编译出来的
-ReAct 图，Plan-Exec 退到 ``/chat/plan/stream`` 封存（见 ADR-0010）。
+T8 之前顶层是 Plan-Exec 编排图；T8 起换成这个直接用 ``create_agent`` 编译出来的
+ReAct 图，Plan-Exec 退到封存路径，并在 T16 彻底下线（见 ADR-0010 与 ADR-0021）。
 """
 
 from evaharness.agents.lead_agent.agent import (

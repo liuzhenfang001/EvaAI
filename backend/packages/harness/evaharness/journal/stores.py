@@ -36,7 +36,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
-from evaharness.agents.plan_exec.events import MessagesEvent, RunEvent, RunStartEvent
+from evaharness.agents.events import MessagesEvent, RunEvent, RunStartEvent
 
 logger = logging.getLogger(__name__)
 

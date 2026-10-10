@@ -6,16 +6,17 @@ import json
 import pytest
 
 from app.gateway.sse import format_sse, map_run_event, sse_consumer
-from evaharness.agents.plan_exec.events import (
+from evaharness.agents.events import (
     MessagesEvent,
     PlanEvent,
+    PlanTask,
     ReplanEvent,
     RunStartEvent,
     SummaryEvent,
     TaskEndEvent,
+    TaskResult,
     TaskStartEvent,
 )
-from evaharness.agents.plan_exec.schemas import PlanTask, PlanValidationError, TaskResult
 
 
 def test_format_sse_null_data():
@@ -161,12 +162,13 @@ async def test_sse_consumer_maps_events_then_ends():
 
 @pytest.mark.asyncio
 async def test_sse_consumer_emits_error_frame_on_exception():
-    frames = await _drain(_from_list([], error=PlanValidationError("坏计划")))
+    """任何异常都要翻成 error 帧——这里用 ValueError 是因为 PlanValidationError 随下线没了。"""
+    frames = await _drain(_from_list([], error=ValueError("坏输入")))
 
     assert [_parse(f)[0] for f in frames] == ["error", "end"]
     _, data = _parse(frames[0])
-    assert data["name"] == "PlanValidationError"
-    assert "坏计划" in data["message"]
+    assert data["name"] == "ValueError"
+    assert "坏输入" in data["message"]
 
 
 @pytest.mark.asyncio

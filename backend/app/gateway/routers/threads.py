@@ -8,11 +8,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.tools import docker_sandbox
 from evaharness.checkpoint import delete_session_checkpoints
 from evaharness.journal.stores import JournalEntry, JournalThread
 
@@ -64,6 +66,7 @@ async def delete_thread(thread_id: str, request: Request) -> None:
     except ValueError as exc:
         raise _not_found(thread_id) from exc
     await _delete_checkpoints(request, thread_id)
+    await _delete_sandbox_container(request, thread_id)
 
 
 async def _delete_checkpoints(request: Request, thread_id: str) -> None:
@@ -77,6 +80,23 @@ async def _delete_checkpoints(request: Request, thread_id: str) -> None:
         return
     if deleted:
         logger.info("已清理会话 %s 的 %d 个任务级 checkpoint", thread_id, deleted)
+
+
+async def _delete_sandbox_container(request: Request, thread_id: str) -> None:
+    """连带删掉这个会话的沙箱容器（没启用 bash 的部署根本没有容器）。
+
+    容器是这个会话的**运行状态**，不是用户的文件——ADR-0012 那条「删会话不删文件」的债不适用
+    于它。失败只记日志：会话本身已经没了，为一次收尾失败回错误只会让人以为没删掉。
+    """
+    if not getattr(request.app.state, "bash_enabled", False):
+        return
+    try:
+        removed = await asyncio.to_thread(docker_sandbox.remove_session_container, thread_id)
+    except Exception:
+        logger.warning("清理会话 %s 的沙箱容器失败", thread_id, exc_info=True)
+        return
+    if removed:
+        logger.info("已删除会话 %s 的沙箱容器", thread_id)
 
 
 async def _load_or_404(thread_id: str, request: Request) -> list[JournalEntry]:

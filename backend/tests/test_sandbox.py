@@ -8,7 +8,7 @@
 import subprocess
 
 import pytest
-from tool_fakes import PLAN_EXEC_CONTEXT, WORKSPACE_CONTEXT, fake_runtime
+from tool_fakes import COORDINATE_CONTEXT, WORKSPACE_CONTEXT, fake_runtime
 
 from app.tools.sandbox import MOUNTS, PathNotAllowedError, Sandbox
 from evaharness.agents.middlewares.context import session_id
@@ -210,9 +210,9 @@ def test_session_id_from_a_lead_context():
     assert session_id(fake_runtime(WORKSPACE_CONTEXT)) == "th-1"
 
 
-def test_session_id_from_a_plan_exec_coordinate():
-    """封存路径只有坐标 ``{会话}:{运行}:{任务}``，取第一段——两个会话的文件绝不能混。"""
-    assert session_id(fake_runtime(PLAN_EXEC_CONTEXT)) == "th-1"
+def test_session_id_from_a_coordinate_context():
+    """坐标形状只有 ``{会话}:{运行}:{任务}``，取第一段——两个会话的文件绝不能混。"""
+    assert session_id(fake_runtime(COORDINATE_CONTEXT)) == "th-1"
 
 
 def test_session_id_without_a_context_fails_loudly():

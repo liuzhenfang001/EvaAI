@@ -22,7 +22,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 PRESENT_FILES_KIND = "files_presented"
-"""载荷的判别键。取值与 :class:`~evaharness.agents.plan_exec.events.FilesPresentedEvent`
+"""载荷的判别键。取值与 :class:`~evaharness.agents.events.FilesPresentedEvent`
 的 ``type`` 相同——同一条事件在链路上的两个阶段用同一个名字，少一处对不上的地方。"""
 
 

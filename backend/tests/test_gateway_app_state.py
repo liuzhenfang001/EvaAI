@@ -11,9 +11,9 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from fakes import ToolCapableFake
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from plan_exec_fakes import ToolCapableFake
 
 from app.gateway.agents import AgentFactory
 from app.gateway.app import lifespan
@@ -137,3 +137,106 @@ async def test_a_broken_tool_entry_refuses_to_start(monkeypatch):
     with pytest.raises(Exception, match="no_such_module"):
         async with lifespan(SimpleNamespace(state=SimpleNamespace())):
             pass
+
+
+# --------------------------------------------------------------------------- #
+# docker 沙箱（T15）
+# --------------------------------------------------------------------------- #
+
+_BASH_TOOL = {"name": "bash", "use": "app.tools.bash:make_bash", "image": "img:1"}
+
+
+class _Store:
+    """只实现 lifespan 真正用到的那一个方法。"""
+
+    def __init__(self, *sessions: str) -> None:
+        self._sessions = [SimpleNamespace(thread_id=session) for session in sessions]
+
+    async def threads(self):
+        return self._sessions
+
+
+def _stub_lifespan(monkeypatch, *, tools=None, store=None) -> None:
+    """把 lifespan 的外部依赖全换成假的（上面几条测试各自铺的那一套，这里抽出来复用）。"""
+
+    @asynccontextmanager
+    async def fake_saver(_path):
+        yield InMemorySaver()
+
+    async def no_prune(_saver, _retention_days):  # noqa: ARG001
+        return None
+
+    def fake_model(_config, name=None, **_kwargs):  # noqa: ANN001, ANN003
+        return ToolCapableFake(messages=itertools.cycle([AIMessage(content="好的。")]))
+
+    monkeypatch.setattr("app.gateway.app.load_env_file", lambda _path: None)
+    monkeypatch.setattr("app.gateway.app.load_config", lambda _path: _config(tools=tools or _ONE_TOOL))
+    monkeypatch.setattr("app.gateway.app.make_sqlite_checkpointer", fake_saver)
+    monkeypatch.setattr("app.gateway.app._prune_checkpoints", no_prune)
+    monkeypatch.setattr("app.gateway.app.make_journal_store", lambda _config: store or _Store())
+    monkeypatch.setattr("app.gateway.agents.create_chat_model", fake_model)
+
+
+@pytest.mark.asyncio
+async def test_bash_that_cannot_start_refuses_to_boot(monkeypatch):
+    """启用了 bash 却用不了 = 坏部署：早说。拖到模型第一次调用才炸，离「你刚改的配置」就很远了。"""
+    from app.tools.docker_sandbox import DockerError
+
+    def refuse(_image: str) -> None:
+        raise DockerError("docker daemon 连不上，bash 工具没法用")
+
+    _stub_lifespan(monkeypatch, tools=[*_ONE_TOOL, _BASH_TOOL])
+    monkeypatch.setattr("app.tools.bash.check_docker_ready", refuse)
+
+    with pytest.raises(DockerError, match="daemon 连不上"):
+        async with lifespan(SimpleNamespace(state=SimpleNamespace())):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_bash_enabled_reconciles_orphan_containers_at_startup(monkeypatch):
+    """启动期把孤儿容器清掉——清理失败只警告，**不拦启动**（与 checkpoint 清理同口径）。"""
+    seen: dict = {}
+
+    def fake_reconcile(live, **_kwargs):  # noqa: ANN001, ANN003
+        seen["live"] = live
+        return 2
+
+    _stub_lifespan(monkeypatch, tools=[*_ONE_TOOL, _BASH_TOOL], store=_Store("th-alive"))
+    monkeypatch.setattr("app.tools.bash.check_docker_ready", lambda image: None)
+    monkeypatch.setattr("app.gateway.app.docker_sandbox.reconcile_orphans", fake_reconcile)
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with lifespan(app):
+        assert app.state.bash_enabled is True, "DELETE 会话那条路由靠它决定要不要收尾"
+
+    assert seen["live"] == {"th-alive"}, "判据是 journal 里的会话，不是磁盘目录"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_cleanup_does_not_block_startup(monkeypatch):
+    def boom(live, **_kwargs):  # noqa: ANN001, ARG001
+        raise RuntimeError("docker 不见了")
+
+    _stub_lifespan(monkeypatch, tools=[*_ONE_TOOL, _BASH_TOOL])
+    monkeypatch.setattr("app.tools.bash.check_docker_ready", lambda image: None)
+    monkeypatch.setattr("app.gateway.app.docker_sandbox.reconcile_orphans", boom)
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with lifespan(app):
+        assert app.state.bash_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_without_a_bash_entry_docker_is_never_touched(monkeypatch):
+    """没启用 bash 的部署（模板的默认状态）一个 docker 命令都不该发。"""
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("没启用 bash 却碰了 docker")
+
+    _stub_lifespan(monkeypatch)
+    monkeypatch.setattr("app.gateway.app.docker_sandbox.reconcile_orphans", boom)
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with lifespan(app):
+        assert app.state.bash_enabled is False

@@ -18,7 +18,7 @@ _Avoid_: application, 业务代码, server
 
 **ReAct**：
 一个「推理 → 行动 → 观察」的循环：模型自己决定调用哪个工具、调几次、何时收尾。
-EvaAI 里所有 agent（主 Agent、子 agent、Plan-Exec 的任务执行单元）都是 ReAct 图。
+EvaAI 里所有 agent（主 Agent、子 agent）都是 ReAct 图。
 _Avoid_: react agent, 循环体, agent loop
 
 **lead agent（主 Agent）**：
@@ -27,21 +27,22 @@ _Avoid_: react agent, 循环体, agent loop
 _Avoid_: orchestrator, supervisor, 总控, main agent, leader agent
 
 **Plan-Exec**：
-把用户请求拆成任务图、派发给执行单元、再汇总结果的编排模型。**T8 起不再是默认路径**，
-退到 `/chat/plan/stream` 封存（路由与测试都保留，没有 UI 入口），将来以「主 Agent 的一个
-子能力」回来。
+把用户请求拆成任务图、派发给执行单元、再汇总结果的编排模型。**T8 起不再是默认路径，T16 起
+整条下线**（见 ADR-0021）——代码、路由、测试都删了。这个词现在只出现在**历史语境**里：
+T8 之前落盘的 journal 行里确实有 `plan` / `task_start` / `summary` 这些事件，前端回放老会话时
+仍会渲染它们。**新运行不会再产生任何一条。**
 _Avoid_: plan-and-execute, plan-and-solve, 规划执行
 
 **planner**：
-Plan-Exec 里产出任务图的角色（封存路径）。
+Plan-Exec 里产出任务图的角色。随 Plan-Exec 在 T16 下线（ADR-0021）。
 _Avoid_: 规划器, 调度器, 拆解器
 
 **replanner**：
-Plan-Exec 里每批任务结束后判断「继续还是结束」的角色（不重写计划，封存路径）。
+Plan-Exec 里每批任务结束后判断「继续还是结束」的角色（不重写计划）。随 Plan-Exec 在 T16 下线。
 _Avoid_: 重规划器, 动态规划器
 
 **任务执行单元**：
-Plan-Exec 里承载单个任务的 ReAct 图（封存路径）。
+Plan-Exec 里承载单个任务的 ReAct 图。随 Plan-Exec 在 T16 下线。
 _Avoid_: worker, ReAct 执行器
 
 **思考档位（thinking level）**：
@@ -65,7 +66,7 @@ _Avoid_: worker, 任务 agent, child agent
 
 **建图工厂（AgentFactory）**：
 按**请求**构建图与角色的唯一入口——主图、子 agent 图、模型，以及封存路径的
-planner / 执行单元 / replanner。它只持有跨请求**必须**共享的建图参数（配置、业务工具、
+主图与子图。它只持有跨请求**必须**共享的建图参数（配置、业务工具、
 checkpointer），自己不持有任何图或模型。
 _Avoid_: agent 池, 图缓存, builder, 单例
 
@@ -91,9 +92,18 @@ _Avoid_: tool loader, 插件系统, 工具工厂
 
 **挂载根 / 虚拟路径（mount root / virtual path）**：
 模型看到的目录名（`/workspace`、`/output`、`/input`、`/skills`）与它们对应的宿主目录之间的
-映射。**宿主绝对路径永远不进模型上下文**（泄漏 + 不可移植）。这四个挂载点是将来换真沙箱的
-**唯一缝**。
+映射。**宿主绝对路径永远不进模型上下文**（泄漏 + 不可移植）。这四个挂载点曾经是「将来换真沙箱」
+的唯一缝——T15 换了（见「沙箱容器」），而缝的形状没变：**同一个虚拟路径在两边都是同一个路径**。
 _Avoid_: 沙箱路径, root path, 别名目录
+
+**沙箱容器（sandbox container）**：
+`bash` 工具执行命令的那台 Linux 容器。**每会话一个、长驻**，名字 `evaai-{会话}`，所以它**不是**
+「每次调用一个」，也**不是**「会话」——它是会话的运行状态（删会话连带删它）。
+它的四个挂载点就是虚拟路径本身，于是容器里写 `/workspace/x` 与文件工具的 `/workspace/x` 是
+**同一个文件**，不是「两套坐标系靠约定对齐」；`/input` 与 `/skills` 的只读在这里由 docker 强制。
+四个目录**之外**的东西（装的包、`/tmp`、后台进程）文件工具看不见、容器重建就没——所以「要留下的
+写 `/workspace` 或 `/output`」是模型必须知道的一条。
+_Avoid_: 沙箱（在本项目里那指虚拟路径那一层机制）、docker 环境, 执行环境, 沙箱会话
 
 **工作台（workspace）**：
 会话级的工作目录，相对路径的落点，草稿与中间产物放这里。与「交付」（`/output`）和「用户上传」
@@ -143,8 +153,8 @@ _Avoid_: 技能列表、技能索引（那是参照项目的 `skill_index`，指
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T14**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
+**T1–T16**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15、T15 是 #16、T16 是 #17），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)，T15（docker 沙箱）见 [Issue #16](https://github.com/liuzhenfang001/EvaAI/issues/16)，T16（Plan-Exec 下线）见 [Issue #17](https://github.com/liuzhenfang001/EvaAI/issues/17)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测
@@ -161,7 +171,7 @@ _Avoid_: session, conversation, 聊天记录
 |---|---|---|
 | 主 Agent | `{会话}:lead` | **会话级、跨轮固定**——多轮记忆的来源 |
 | 子 agent | `{会话}:{运行}:sub:{调用}` | 运行级，跨轮不累积 |
-| Plan-Exec 任务 | `{会话}:{运行}:{任务}` | 运行级（封存路径） |
+| Plan-Exec 任务 | `{会话}:{运行}:{任务}` | 运行级（**已下线**；老 checkpoint 里还有） |
 
 它也是 LoopDetection 的分桶键，并出现在 RunEvent 的 `metadata.thread_id` 里
 （那是 LangGraph 自己的键，我们原样保留）。**账本本身活在每请求一份的中间件实例里**，
@@ -169,7 +179,7 @@ _Avoid_: session, conversation, 聊天记录
 _Avoid_: 与「thread（会话）」混用；读 `metadata.thread_id` 时误以为它是会话 id
 
 **lane（泳道）**：
-RunEvent 的 `task_id` 在界面上的分组。主 Agent 用约定的 `main`，Plan-Exec 用 `t1`/`t2`。
+RunEvent 的 `task_id` 在界面上的分组。主 Agent 用约定的 `main`；`t1`/`t2` 是已下线的 Plan-Exec 留下的，只在回放老会话时见到。
 它**跨运行会重复**（同一个会话的第二轮又会出现 `t1`），所以只能当展示标签、不能当身份；
 气泡身份是 `runId:lane`。
 _Avoid_: 用 lane 当消息 id；把它当成任务的持久标识
@@ -187,9 +197,13 @@ _Avoid_: 回合, step, turn, iteration
 _Avoid_: trace, 日志, telemetry
 
 **mode（路径）**：
-一轮运行走的是哪条路径，由 `run_start` 事件的 `mode` 字段承载：`react` 是主 Agent 直答
-（默认），`plan` 是封存的 Plan-Exec。它决定气泡署名与面板文案，**不能靠「有没有计划事件」
-反推**——那种推断在回放中途会时对时错。
+一轮运行走的是哪条路径，由 `run_start` 事件的 `mode` 字段承载：`react` 是主 Agent 直答，
+`plan` 是已下线的 Plan-Exec。它决定气泡署名与面板文案，**不能靠「有没有计划事件」反推**
+——那种推断在回放中途会时对时错。
+
+T16 起只有一条路径（新运行写死的都是 `react`），这个字段**仍然要写**：前端 `runState.ts`
+的缺省值是 `plan` 且那是**历史回退**语义（T8 之前的 journal 行里没有这个字段），不写的话
+每轮新对话都会被标成 plan。所以它现在是一条**回放兼容**契约，不是路径分叉。
 _Avoid_: 用 `plan` 事件是否存在来判断路径
 
 **RunEvent**：

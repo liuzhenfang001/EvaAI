@@ -1,5 +1,7 @@
 # 编排载体用 async 生成器，不搭 LangGraph 图
 
+> **2026-10-10 起作废**：`run_plan_exec()` 已在 T16 随 Plan-Exec 下线（见 [ADR-0021](0021-plan-exec-retirement.md)）。**思路本身仍然成立**——现在的 `run_lead_agent()` 是同一形态的 async 生成器（纯 Python 控制流 + `RunEvent` 流），本 ADR 的可测 / 可取消 / 可观测三条理由一条没变，只是载体从编排器换成了主 Agent。
+
 ADR-0004 定了「顶层用 Plan-And-Executor 显式编排」，但没说「显式」要用什么承载。本 ADR 把它落到**纯 async 生成器 + RunEvent 流**：`run_plan_exec()` 是个 async 生成器，planner / ReAct executor / replanner 都是它的注入参数，编排进度活在 Python 控制流里。ReAct 执行器内部仍是 `create_agent` 编译出的 LangGraph（ADR-0003 不变），两者是嵌套而非同构。
 
 三个理由：**可测**——三个角色都是注入点，契约测试全用替身驱动，不必围着 compiled graph 转；**可取消**——ADR-0005 的硬取消就是 `asyncio.Task.cancel()` 穿透整棵调用树，不需要理解 checkpointer 的中断语义；**可观测**——事件流本身就是 SSE 与 T3 运行时间线的共同来源，一个产出两个消费，不用为「流式」和「事件」维护两套通道。

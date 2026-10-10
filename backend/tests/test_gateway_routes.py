@@ -1,11 +1,14 @@
-"""两条 chat 路由的接线：谁跑什么、首尾帧是什么、有没有记账、每请求建几张图。
+"""chat 路由的接线：跑什么、首尾帧是什么、有没有记账、每请求建几张图。
 
 ``test_gateway_chat.py`` 直接把生成器喂给 ``sse_consumer``，绕过了 FastAPI 这一层；
-这里补上被绕过的那一段——**接错线是这一类改动最容易犯又最难发现的错**（比如默认
-路由还指着封存的 Plan-Exec），而且它不会让任何单元测试变红。
+这里补上被绕过的那一段——**接错线是这一类改动最容易犯又最难发现的错**（比如路由指到了
+一个不存在的路径），而且它不会让任何单元测试变红。
 
 **注入契约是 ``app.state.agent_factory``**（不是图）：T9 起图是请求级产物，测试要能
 看见「每个请求各建了一张」。任何挂 ``chat.router`` 的裸 app 都必须给这个属性。
+
+T16 起只有一条路径（``/chat/stream`` → 主 Agent），``/chat/plan/stream`` 随 Plan-Exec
+下线删除（ADR-0021）。
 """
 
 import asyncio
@@ -15,18 +18,17 @@ from typing import Any
 
 import httpx
 import pytest
+from fakes import ToolCapableFake, fake_app_config
 from fastapi import FastAPI
 from langchain.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from plan_exec_fakes import RoutingStructuredFake, fake_app_config
 
 from app.gateway.agents import AgentFactory
 from app.gateway.routers import chat
 from app.gateway.run_registry import RunRegistry
 from evaharness.agents.lead_agent import LEAD_LANE
 from evaharness.agents.options import RunOptions
-from evaharness.agents.plan_exec.schemas import Plan, PlanTask, ReplanDecision
 from evaharness.journal.stores import MemoryJournalStore
 
 THREAD = "th-1"
@@ -51,17 +53,13 @@ def _parse(frame: str):
 
 
 def _fake_model(name: str | None = None, options: Any = None) -> BaseChatModel:  # noqa: ARG001
-    """一个模型同时服务两条路径：主 Agent 要文本，planner / replanner 要结构化输出。
+    """主 Agent 要的假模型。
 
     第二个参数是运行参数（思考档位等）——这一层不关心它，但签名要接得住：路由会把每次
     请求的档位一路传下来。
     """
     del name, options
-    return RoutingStructuredFake(
-        messages=itertools.cycle([AIMessage(content="现在是 18:04")]),
-        plan=Plan(tasks=[PlanTask(id="t1", description="查时间")]),
-        decision=ReplanDecision(should_continue=True, reason="继续"),
-    )
+    return ToolCapableFake(messages=itertools.cycle([AIMessage(content="现在是 18:04")]))
 
 
 class _RecordingFactory(AgentFactory):
@@ -73,21 +71,13 @@ class _RecordingFactory(AgentFactory):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.leads: list = []
-        self.plans: list = []
         self.lead_options: list = []
-        self.plan_options: list = []
 
     def lead(self, options=None):  # noqa: ANN001, ANN201
         graph = super().lead(options)
         self.leads.append(graph)
         self.lead_options.append(options)
         return graph
-
-    def plan_exec(self, options=None):  # noqa: ANN001, ANN201
-        roles = super().plan_exec(options)
-        self.plans.append(roles)
-        self.plan_options.append(options)
-        return roles
 
 
 def _client(store: MemoryJournalStore, journal_config=None) -> httpx.AsyncClient:
@@ -200,35 +190,7 @@ async def test_the_default_route_records_the_run():
 
 
 # --------------------------------------------------------------------------- #
-# 封存路径：Plan-Exec
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.asyncio
-async def test_the_plan_route_still_runs_plan_exec():
-    """封存不等于坏掉：路由还在，且仍然产出它那套事件。"""
-    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
-        frames = await _post(client, "/chat/plan/stream", "现在几点？")
-
-    names = [name for name, _ in frames]
-    assert names[0] == "run_start"
-    assert "plan" in names
-    assert "task_start" in names
-    assert "summary" in names
-    assert names[-1] == "end"
-
-
-@pytest.mark.asyncio
-async def test_the_plan_route_declares_plan_mode():
-    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
-        frames = await _post(client, "/chat/plan/stream", "现在几点？")
-
-    _, data = frames[0]
-    assert data["mode"] == "plan"
-
-
-# --------------------------------------------------------------------------- #
-# 参数校验（两条路径共用一套外壳）
+# 参数校验
 # --------------------------------------------------------------------------- #
 
 
@@ -236,9 +198,8 @@ async def test_the_plan_route_declares_plan_mode():
 async def test_an_illegal_thread_id_is_rejected_before_the_run():
     """非法 id 会是 journal 的路径段，必须在入口挡成 400 而不是写盘时炸成 500。"""
     async with _client(MemoryJournalStore(), _JournalConfig()) as client:
-        for path in ("/chat/stream", "/chat/plan/stream"):
-            resp = await client.post(path, json={"content": "你好", "thread_id": "坏.id"})
-            assert resp.status_code == 400, path
+        resp = await client.post("/chat/stream", json={"content": "你好", "thread_id": "坏.id"})
+        assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -270,14 +231,6 @@ async def test_the_first_message_creates_the_session_file_space(_sandbox_root):
 
 
 @pytest.mark.asyncio
-async def test_the_plan_route_creates_it_too(_sandbox_root):
-    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
-        await _post(client, "/chat/plan/stream", "你好")
-
-    assert (_sandbox_root / "user" / THREAD / "workspace").is_dir()
-
-
-@pytest.mark.asyncio
 async def test_an_illegal_thread_id_never_creates_anything(_sandbox_root):
     """400 必须发生在建目录**之前**——否则一个畸形 id 也能在磁盘上留痕。"""
     async with _client(MemoryJournalStore(), _JournalConfig()) as client:
@@ -301,20 +254,6 @@ async def test_each_request_builds_its_own_lead_graph():
     leads = client.factory.leads
     assert len(leads) == 2, "两个请求应当各建一张图"
     assert leads[0] is not leads[1]
-
-
-@pytest.mark.asyncio
-async def test_each_request_builds_its_own_plan_roles():
-    """封存路径同样是每请求一份，而且三件套一起换。"""
-    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
-        await _post(client, "/chat/plan/stream", "现在几点？")
-        await _post(client, "/chat/plan/stream", "现在几点？")
-
-    plans = client.factory.plans
-    assert len(plans) == 2
-    assert plans[0].planner is not plans[1].planner
-    assert plans[0].executor is not plans[1].executor
-    assert plans[0].replanner is not plans[1].replanner
 
 
 # --------------------------------------------------------------------------- #

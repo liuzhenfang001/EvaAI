@@ -1,5 +1,7 @@
 # ReAct 主 Agent 取代 Plan-Exec 成为默认路径
 
+> **2026-10-10 更新**：本 ADR 记的那笔债（事件契约住在 `plan_exec/events.py`）已由 T16 还清——事件模块搬到了 `agents/events.py`，同时整个 Plan-Exec 产线被删除（见 [ADR-0021](0021-plan-exec-retirement.md)）。**「主 Agent 是默认路径」这条决策不变**；变的是「封存」这个处置：原计划让它在 T8 之后继续留着，实际证明它成了每次改 agent 层都要跟着动的一条死路径，所以 T16 改为删除。
+
 > **2026-10-02 更新**：决策 1 里「`app.state` 里仍然装配」这一句已由 [ADR-0011](0011-per-request-graph-construction.md) 取代——T9 起 Plan-Exec 的图也改为**每请求构建**，`app.state` 上只剩长命物。封存本身（路由保留、测试保留、没有 UI 入口）不变。另：下面「后果」里「`LoopDetectionMiddleware` 的 `_history` 对 Plan-Exec 的坐标仍是无界增长」一条，也随「中间件实例随请求消失」而解除。
 
 T1–T7 一路把 **Plan-Exec 当作主路径**：任何一句「你好」都要先过 planner，再由执行单元

@@ -25,14 +25,14 @@ checkpointer，第 2 轮仍看得到第 1 轮（见 ADR-0011）。
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 
-from app.prompts import EXECUTOR_PROMPT, PLANNER_PROMPT, REPLANNER_PROMPT, SUBAGENT_PROMPT, SYSTEM_PROMPT
+from app.prompts import BASH_SECTION, SUBAGENT_PROMPT, SYSTEM_PROMPT
+from app.tools.bash import BASH_TOOL_NAME
 from app.tools.present_files import PRESENT_FILES_NAME
 from evaharness.agents.lead_agent import (
     build_lead_middlewares,
@@ -41,19 +41,11 @@ from evaharness.agents.lead_agent import (
     make_task_tool,
 )
 from evaharness.agents.options import RunOptions
-from evaharness.agents.plan_exec import (
-    Planner,
-    Replanner,
-    TaskExecutor,
-    make_planner,
-    make_react_executor,
-    make_replanner,
-)
 from evaharness.config.app_config import AppConfig
 from evaharness.models.factory import create_chat_model
 from evaharness.skills import Skill, render_skills_section
 
-__all__ = ["AgentFactory", "PlanRoles"]
+__all__ = ["AgentFactory"]
 
 ModelFactory = Callable[[str | None, "RunOptions | None"], BaseChatModel]
 """模型构造接缝：吃 profile 名（``None`` = 主 profile）与这次运行的参数，返回模型实例。
@@ -75,20 +67,6 @@ def _subagent_tools(tools: Sequence[Any]) -> list[Any]:
     语义上也对：交付物由主 Agent 统一交给用户。子 agent 只把「文件写到哪了」回报给它。
     """
     return [tool for tool in tools if getattr(tool, "name", None) != PRESENT_FILES_NAME]
-
-
-@dataclass(frozen=True, slots=True)
-class PlanRoles:
-    """Plan-Exec 的三件套（封存路径，见 ADR-0010 与 ADR-0011）。
-
-    三者**必须一起换**：``make_react_executor`` 在装配期就把图闭包进了 ``execute``，
-    所以只换 planner / replanner 等于没换——留下一张长命的子图，它的中间件桶继续
-    无界增长。
-    """
-
-    planner: Planner
-    executor: TaskExecutor
-    replanner: Replanner
 
 
 class AgentFactory:
@@ -131,10 +109,13 @@ class AgentFactory:
         # 技能清单**渲染一次**存下来：它的内容与这次构建绑定，而 `_prompt` 会被调用三次
         # （主图 / 子图 / 执行单元）。空技能时它是 `""`，于是 `_prompt` 原样返回 base。
         self._skill_section = render_skills_section(list(skills))
+        # bash 段只有工具表里**真的有** bash 时才拼：没启用这个工具的部署不该在提示词里
+        # 看到它，否则模型会去调一个不存在的名字。
+        self._bash_section = BASH_SECTION if any(tool.name == BASH_TOOL_NAME for tool in tools) else ""
         self._model_factory: ModelFactory = model_factory if model_factory is not None else self._create_model
 
     def _prompt(self, base: str) -> str:
-        """把技能清单接到基础提示词后面——**空清单时逐字节原样返回**。
+        """把技能清单与 bash 段接到基础提示词后面——**两段都为空时逐字节原样返回**。
 
         「空时必须一字不差」不是洁癖：它拼在 `system_prompt` 后面，多一点换行就等于所有没写技能的
         部署都拿到一份与从前不同的提示词，前缀缓存白废、`test_lead_agent` 那两条断言也会红。
@@ -143,7 +124,8 @@ class AgentFactory:
         中间件链的名字，`tests/test_lead_agent_memory.py` 断言模型收到 10 条消息——插消息会把后者
         顶破，加中间件会把前者顶破。拼进 `system_prompt` 两条都不动（system 那条只是变长）。
         """
-        return f"{base}\n\n{self._skill_section}" if self._skill_section else base
+        sections = [section for section in (self._skill_section, self._bash_section) if section]
+        return "\n\n".join([base, *sections])
 
     def lead(self, options: RunOptions | None = None) -> CompiledStateGraph:
         """建主 Agent 的图，连带它专属的子 agent 图与 ``task`` 工具。
@@ -173,28 +155,6 @@ class AgentFactory:
             system_prompt=self._prompt(SYSTEM_PROMPT),
             middleware=self._lead_middlewares(model),
             checkpointer=self.checkpointer,
-        )
-
-    def plan_exec(self, options: RunOptions | None = None) -> PlanRoles:
-        """建 Plan-Exec 的三件套（封存路径）。
-
-        与 :meth:`lead` 一样是每请求一次：执行单元在构造时建图并闭包进 ``execute``，
-        所以「重建」只能通过重建执行单元本身完成。``options`` 同样一个实例喂给三者，
-        与主路径保持同一口径。
-
-        ``self.tools``（含 MCP 工具）只喂**执行单元**——planner / replanner 走的是
-        ``with_structured_output``，它们不调工具。
-        """
-        model = self._model_factory(None, options)
-        return PlanRoles(
-            planner=make_planner(model, system_prompt=PLANNER_PROMPT),
-            executor=make_react_executor(
-                model,
-                self.tools,
-                system_prompt=self._prompt(EXECUTOR_PROMPT),
-                checkpointer=self.checkpointer,
-            ),
-            replanner=make_replanner(model, system_prompt=REPLANNER_PROMPT),
         )
 
     def _lead_middlewares(self, model: BaseChatModel) -> list[AgentMiddleware]:

@@ -11,10 +11,10 @@ import sys
 import types
 
 import pytest
+from fakes import StreamToolFake, collect
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
-from plan_exec_fakes import StreamToolFake, collect
 
 from app.tools.registry import build_tools
 from evaharness.agents.lead_agent import TASK_TOOL_NAME, make_lead_agent, run_lead_agent
@@ -130,6 +130,10 @@ def test_the_real_config_lists_tools_that_all_resolve(monkeypatch):
     assert {"ls", "read_file", "write_file", "str_replace", "glob", "grep"} <= set(names)
     assert {"web_search", "web_fetch"} <= set(names)
     assert "present_files" in names, "模板少了它，用户装上就没有文件卡片"
+    assert "bash" not in names, (
+        "模板里的 bash 是**注释掉**的（它要求本机有 Docker Desktop 与镜像，启用而不可用会拒绝启动）。"
+        "一旦有人取消注释，这些单测就会去真的调 docker info —— 那正是这条守卫要挡的。"
+    )
 
 
 # --------------------------------------------------------------------------- #

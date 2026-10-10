@@ -6,7 +6,7 @@
 """
 
 import pytest
-from tool_fakes import PLAN_EXEC_CONTEXT, WORKSPACE_CONTEXT, fake_runtime
+from tool_fakes import COORDINATE_CONTEXT, WORKSPACE_CONTEXT, fake_runtime
 
 from app.tools import file_ops
 from app.tools.sandbox import PathNotAllowedError
@@ -265,7 +265,7 @@ def test_tools_use_the_session_from_a_lead_context(_sandbox_root):
     assert (_sandbox_root / "user" / "th-1" / "workspace" / "x.txt").is_file()
 
 
-def test_tools_use_the_session_from_a_plan_exec_coordinate(_sandbox_root):
-    """封存路径只给坐标 ``{会话}:{运行}:{任务}``——取第一段，两个会话的文件不会混。"""
-    _run(file_ops.write_file, fake_runtime(PLAN_EXEC_CONTEXT), path="x.txt", content="1")
+def test_tools_use_the_session_from_a_coordinate_context(_sandbox_root):
+    """坐标形状的上下文只给 ``{会话}:{运行}:{任务}``——取第一段，两个会话的文件不会混。"""
+    _run(file_ops.write_file, fake_runtime(COORDINATE_CONTEXT), path="x.txt", content="1")
     assert (_sandbox_root / "user" / "th-1" / "workspace" / "x.txt").is_file()

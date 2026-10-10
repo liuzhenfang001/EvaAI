@@ -1,13 +1,16 @@
 """RunEvent：一次运行的对外事件流。
 
-这是所有路径（lead agent 与封存的 Plan-Exec）的**唯一输出通道**，也是 SSE 层与
-RunJournal 共同的输入。事件全部 JSON 可序列化（不放 LangChain 对象），因此 SSE 映射
-是一行透传，RunJournal 可以直接落盘。
+这是主 Agent 路径的**唯一输出通道**，也是 SSE 层与 RunJournal 共同的输入。事件全部 JSON
+可序列化（不放 LangChain 对象），因此 SSE 映射是一行透传，RunJournal 可以直接落盘。
 
 .. note::
-   模块路径 ``agents/plan_exec/events.py`` 是**遗留**：T8 起 Plan-Exec 不再是默认路径，
-   而这份契约是两条路径共用的。搬到 ``agents/events.py`` 才是正确的位置，但那会牵动
-   十几个 import 与 ``schemas`` 的类型归属，本片按「不扩大范围」留下，欠账记在 ADR-0010。
+   本模块原先住在 ``agents/plan_exec/events.py``——那份契约是两条路径共用的，而 Plan-Exec
+   从 T8 起就不再是默认路径。T16 下线 Plan-Exec 时把它搬到了现在这个位置（ADR-0021），
+   顺手还掉 ADR-0010 记的那笔债。
+
+   ``PlanEvent`` / ``ReplanEvent`` / ``TaskStartEvent`` **保留**，但它们已是**只读的遗留契约**：
+   新运行不再产生，只为**解析老 journal** 而存在（``RunEvent`` 是判别联合，缺一个成员就会让
+   含那种事件的历史行一读就抛）。改它们之前先想清楚「老数据还能不能回放」。
 
 刻意**没有 ``error`` 变体**：任务级失败走 ``TaskEndEvent(status="failed")``
 （best-effort），致命异常直接向上抛、由 SSE 层兜成 error 帧——避免两条错误通道
@@ -32,10 +35,39 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, TypeAdapter
 
 from evaharness.agents.options import ThinkingLevel
-from evaharness.agents.plan_exec.schemas import PlanTask, TaskResult, TerminalTaskStatus
 
 EventCategory = Literal["message", "trace"]
 """事件路由桶。取值见模块 docstring。"""
+
+# --------------------------------------------------------------------------- #
+# Plan-Exec 的载荷类型（遗留，见模块 docstring 的 note）
+#
+# 原先住在 ``agents/plan_exec/schemas.py``。T16 删掉产线时，这几个被 ``PlanEvent`` /
+# ``TaskEndEvent`` / ``SummaryEvent`` 的**载荷**引用着，而那几个事件类必须留着（老 journal
+# 要能解析），所以它们跟着搬进来。**只被解析，不再被生产**——``Plan`` / ``ReplanDecision``
+# 那两个只有产线用的类型没有跟着来。
+# --------------------------------------------------------------------------- #
+
+TerminalTaskStatus = Literal["done", "failed", "skipped"]
+"""任务的终态。``pending`` / ``running`` 是面板态，不进这里（只有终态才落进结果）。"""
+
+
+class PlanTask(BaseModel):
+    """计划中的单个任务。"""
+
+    id: str
+    description: str
+    completion_criteria: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+
+
+class TaskResult(BaseModel):
+    """单个任务的终态结果。"""
+
+    task_id: str
+    status: TerminalTaskStatus
+    output: str | None = None
+    error: str | None = None
 
 
 class _MessageEvent(BaseModel):
