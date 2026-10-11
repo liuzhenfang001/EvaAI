@@ -58,6 +58,16 @@ class TestValidation:
     def test_timeout_is_positive_by_default(self):
         assert McpServerConfig(command="npx.cmd").timeout > 0
 
+    def test_a_server_is_enabled_by_default(self):
+        """缺省开——「加一段配置」的默认意图就是要用它。"""
+        assert McpServerConfig(command="npx.cmd").enabled is True
+
+    def test_the_switch_is_a_declared_field_not_a_typo(self):
+        """`shared` 这种捏造出来的键照样被拒——开关是**声明出来的**字段，不是放开了未知键。"""
+        assert McpServerConfig(command="npx.cmd", enabled=False).enabled is False
+        with pytest.raises(ValueError, match="enable"):
+            McpServerConfig(command="npx.cmd", enable=False)
+
 
 class TestExtensionsFile:
     def test_servers_come_from_the_camel_case_key(self):

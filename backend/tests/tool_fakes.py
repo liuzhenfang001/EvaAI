@@ -10,8 +10,8 @@ from typing import Any
 
 from langchain.tools import ToolRuntime
 
-from app.tools.docker_sandbox import Completed
 from evaharness.agents.lead_agent import LeadContext
+from evaharness.sandbox import Completed, SandboxLayout
 
 WORKSPACE_CONTEXT = LeadContext(session_id="th-1", thread_id="th-1:lead", run_id="run-1")
 """lead agent 与子 agent 的形状（带类型的对象）。"""
@@ -23,6 +23,27 @@ T16 下线 Plan-Exec 之前，这是它执行单元的形状（那条路径的�
 路径没了，但形状还在契约里：``middlewares.context`` 的两个访问器都同时认对象与 dict，
 而中间件的单测一直用裸 dict——所以这条要留着继续钉住。
 """
+
+
+def lead_context(
+    layout: SandboxLayout | None = None,
+    *,
+    session: str = "th-1",
+    run_id: str = "run-1",
+) -> LeadContext:
+    """带（或不带）沙箱布局的 lead 形状上下文。
+
+    T17 起沙箱的宿主根与挂载表**从运行上下文进**——不再有模块全局可以 monkeypatch。所以
+    测试重定向沙箱的写法统一成「造一个布局塞进 context」：
+
+        rt = fake_runtime(lead_context(SandboxLayout(root=tmp_path)))
+    """
+    return LeadContext(
+        session_id=session,
+        thread_id=f"{session}:lead",
+        run_id=run_id,
+        sandbox=layout,
+    )
 
 
 def fake_runtime(context: Any, *, tool_call_id: str = "call-1") -> ToolRuntime:
@@ -116,4 +137,4 @@ class FakeDockerRunner:
         return self.command_result
 
 
-__all__ = ["COORDINATE_CONTEXT", "WORKSPACE_CONTEXT", "FakeDockerRunner", "fake_runtime"]
+__all__ = ["COORDINATE_CONTEXT", "WORKSPACE_CONTEXT", "FakeDockerRunner", "fake_runtime", "lead_context"]

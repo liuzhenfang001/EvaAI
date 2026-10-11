@@ -45,7 +45,7 @@ writer 的上下文丢掉。
 
 **3. `present_files` 工具放 app 层——这是相对 DeerFlow 的一处被迫偏离。**
 
-> **2026-10-10 修正**：下面这条理由**到期了**——沙箱与 `file_ops` 正被搬进 harness（T17），依赖方向将不再是理由。`present_files` **仍然留在 app**，但换一个更实在的理由：它是**交付语义**（产出一条 `files_presented` 事件、只放行 `/output`），而 `file_ops` 是通用的文件读写。
+> **2026-10-10 修正**：下面这条理由**到期了**——沙箱与 `file_ops` 已经在 T17 搬进 harness（见 [ADR-0020](0020-sandbox-in-harness.md)），依赖方向不再是理由。`present_files` **仍然留在 app**，但换一个更实在的理由：它是**交付语义**（产出一条 `files_presented` 事件、只放行 `/output`），而 `file_ops` 是通用的文件读写。
 
 DeerFlow 把它放在 harness，因为它自己的 paths 模块也在 harness。我们的 `/output` 路径策略在
 `app.tools.sandbox`，而 `test_harness_boundary.py` 禁止 harness import app。规则一句话：

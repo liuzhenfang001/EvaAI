@@ -14,6 +14,7 @@ T16 起只有一条路径（``/chat/stream`` → 主 Agent），``/chat/plan/str
 import asyncio
 import itertools
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -30,15 +31,15 @@ from app.gateway.run_registry import RunRegistry
 from evaharness.agents.lead_agent import LEAD_LANE
 from evaharness.agents.options import RunOptions
 from evaharness.journal.stores import MemoryJournalStore
+from evaharness.sandbox import SandboxLayout
 
 THREAD = "th-1"
 
 
 @pytest.fixture(autouse=True)
-def _sandbox_root(tmp_path, monkeypatch):
-    """路由现在会建会话的文件空间——把它指到 ``tmp_path``，别往真的 ``backend/.evaai`` 里写。"""
-    monkeypatch.setattr("app.tools.sandbox.SANDBOX_ROOT", tmp_path)
-    return tmp_path
+def sandbox_layout(tmp_path):
+    """路由会建会话的文件空间——布局指向 ``tmp_path``，别往真的 ``backend/.evaai`` 里写。"""
+    return SandboxLayout(root=tmp_path)
 
 
 def _parse(frame: str):
@@ -80,7 +81,7 @@ class _RecordingFactory(AgentFactory):
         return graph
 
 
-def _client(store: MemoryJournalStore, journal_config=None) -> httpx.AsyncClient:
+def _client(store: MemoryJournalStore, journal_config=None, sandbox_layout=None) -> httpx.AsyncClient:
     """把 chat 路由挂在一个状态齐备的裸 app 上（不起 lifespan、不读配置文件）。
 
     checkpointer 在这里**显式共享**一个 ``InMemorySaver``：记忆本来就该跨请求活着，
@@ -90,6 +91,8 @@ def _client(store: MemoryJournalStore, journal_config=None) -> httpx.AsyncClient
     app = FastAPI()
     app.state.journal_store = store
     app.state.journal_config = journal_config
+    # 沙箱布局的注入契约：路由从 state 拿（T17 起不再有模块全局）。
+    app.state.sandbox_layout = sandbox_layout or SandboxLayout(root=Path("C:/evaai-unused"))
     app.state.agent_factory = factory
     registry = RunRegistry()
     app.state.run_registry = registry
@@ -218,26 +221,26 @@ async def test_a_generated_thread_id_comes_back_in_run_start():
 
 
 @pytest.mark.asyncio
-async def test_the_first_message_creates_the_session_file_space(_sandbox_root):
+async def test_the_first_message_creates_the_session_file_space(sandbox_layout):
     """会话一诞生就有它的文件空间——用户要能在对话前把文件放进 /input。
 
     这条也顺带钉住「不依赖模型去调工具」：这次运行里一个文件工具都没被调用。
     """
-    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+    async with _client(MemoryJournalStore(), _JournalConfig(), sandbox_layout) as client:
         await _post(client, "/chat/stream", "你好")
 
     for name in ("input", "output", "workspace"):
-        assert (_sandbox_root / "user" / THREAD / name).is_dir(), name
+        assert (sandbox_layout.root / "user" / THREAD / name).is_dir(), name
 
 
 @pytest.mark.asyncio
-async def test_an_illegal_thread_id_never_creates_anything(_sandbox_root):
+async def test_an_illegal_thread_id_never_creates_anything(sandbox_layout):
     """400 必须发生在建目录**之前**——否则一个畸形 id 也能在磁盘上留痕。"""
-    async with _client(MemoryJournalStore(), _JournalConfig()) as client:
+    async with _client(MemoryJournalStore(), _JournalConfig(), sandbox_layout) as client:
         resp = await client.post("/chat/stream", json={"content": "你好", "thread_id": "坏.id"})
 
     assert resp.status_code == 400
-    assert not (_sandbox_root / "user").exists()
+    assert not (sandbox_layout.root / "user").exists()
 
 
 @pytest.mark.asyncio

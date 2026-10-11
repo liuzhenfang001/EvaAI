@@ -23,7 +23,7 @@ ADR-0012 自己写着：「将来接真沙箱时，换的是这一层『挂载�
 宿主 `.evaai/user/{会话}/workspace/x` 出现；反向也可读）。`/input` 与 `/skills` 的只读从
 「我们自己遵守的约定」变成 **docker 强制的边界**——容器里 `touch /input/x` 会真的失败。
 
-宿主路径仍由 `app/tools/sandbox.py` 独家渲染（`Sandbox.resolve()`），宿主布局的知识没有第二个
+宿主路径仍由 `evaharness.sandbox.paths` 独家渲染（`Sandbox.resolve()`，布局由调用方注入——见 [ADR-0020](0020-sandbox-in-harness.md)），宿主布局的知识没有第二个
 出处；docker 自己吐的报错也要过掩码（见 §7）。
 
 **2. 不为容器再写一套文件操作。**
@@ -60,7 +60,7 @@ Selector 上——那时是 `NotImplementedError`，而且只在真跑起来才�
 
 **6. 清理：启动期 reconcile + 删会话时连带删容器，都不拦启动。**
 
-- 每个容器带三个 label：`evaai.managed=1`、`evaai.deployment=<SANDBOX_ROOT 的哈希>`、
+- 每个容器带三个 label：`evaai.managed=1`、`evaai.deployment=<宿主根的哈希>`、
   `evaai.session=<会话>`。
 - **deployment 用稳定哈希，不用「每次启动生成的 uuid」**：uuid 会让启动期清理把上一轮留下的容器
   全删掉，也就毁掉了跨重启复用，而且同机第二个实例会删掉第一个的容器。
@@ -110,7 +110,7 @@ Selector 上——那时是 `NotImplementedError`，而且只在真跑起来才�
 Docker Desktop 没共享某个盘符时，`-v D:/…` **不报错**——它会在容器里建一个**空目录**。模型看到
 空的 `/workspace`，一头雾水，而且 `docker inspect` 也看不出区别（Mount 条目照样在）。
 
-对策：启动期在 `SANDBOX_ROOT/.mount-check/` 放一个哨兵文件，以 `-v <它>:/evaai-check:ro` 挂进
+对策：在 `<宿主根>/.mount-check/` 放一个哨兵文件（**由 app 在 lifespan 里建**，T17 起 `check_docker_ready` 拿不到布局），以 `-v <它>:/evaai-check:ro` 挂进
 容器（**第五个挂载，模型看不见**）；容器建好后探一次 `test -f /evaai-check/ok`，缺了就抛带
 File Sharing 提示的错，并把那个坏容器删掉。约十行代码，把最坏的那种静默失败变成响的——与
 ADR-0012 记「虚拟路径静默退化」那次的取向一致。

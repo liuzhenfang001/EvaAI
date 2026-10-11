@@ -20,6 +20,7 @@ from app.tools.registry import build_tools
 from evaharness.agents.lead_agent import TASK_TOOL_NAME, make_lead_agent, run_lead_agent
 from evaharness.config.app_config import AppConfig, ToolConfig
 from evaharness.reflection import ReflectionError
+from evaharness.sandbox import SandboxLayout
 
 
 def _config(*entries: ToolConfig) -> AppConfig:
@@ -160,12 +161,12 @@ def test_a_brand_new_tool_needs_only_a_module_and_a_config_line(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_registered_tool_is_reachable_through_the_real_graph(monkeypatch, tmp_path):
+async def test_a_registered_tool_is_reachable_through_the_real_graph(tmp_path):
     """更强的一条：新工具不仅进得了列表，模型真调它时**真的跑到底、结果真的落盘**。
 
     整条链路都是真的（``create_agent`` / ToolNode / ``LeadContext`` / 沙箱），只有模型是假的。
     """
-    monkeypatch.setattr("app.tools.sandbox.SANDBOX_ROOT", tmp_path)
+    layout = SandboxLayout(root=tmp_path)
 
     model = StreamToolFake(
         messages=iter(
@@ -180,10 +181,10 @@ async def test_a_registered_tool_is_reachable_through_the_real_graph(monkeypatch
             ]
         )
     )
-    tools = build_tools(_config(_entry("write_file", "app.tools.file_ops:write_file")))
+    tools = build_tools(_config(_entry("write_file", "evaharness.sandbox.file_ops:write_file")))
     agent = make_lead_agent(model, tools, checkpointer=InMemorySaver())
 
-    events = await collect(run_lead_agent("写个文件", agent=agent, thread_id="th-1"))
+    events = await collect(run_lead_agent("写个文件", agent=agent, thread_id="th-1", sandbox=layout))
 
     assert events[-1].status == "completed"
     written = tmp_path / "user" / "th-1" / "workspace" / "note.txt"
@@ -191,13 +192,13 @@ async def test_a_registered_tool_is_reachable_through_the_real_graph(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_presenting_a_file_reaches_the_event_stream(monkeypatch, tmp_path):
+async def test_presenting_a_file_reaches_the_event_stream(tmp_path):
     """**T11 的端到端**：写文件 → ``present_files`` → 事件流里出现 ``files_presented``。
 
     整条链路都是真的（``create_agent`` / ToolNode / custom 流 / 沙箱），只有模型是假的。
     它一条同时覆盖两件事：工具注册得进去、以及 custom 通道真的通到 runner。
     """
-    monkeypatch.setattr("app.tools.sandbox.SANDBOX_ROOT", tmp_path)
+    layout = SandboxLayout(root=tmp_path)
 
     model = StreamToolFake(
         messages=iter(
@@ -222,13 +223,13 @@ async def test_presenting_a_file_reaches_the_event_stream(monkeypatch, tmp_path)
     )
     tools = build_tools(
         _config(
-            _entry("write_file", "app.tools.file_ops:write_file"),
+            _entry("write_file", "evaharness.sandbox.file_ops:write_file"),
             _entry("present_files", "app.tools.present_files:present_files"),
         )
     )
     agent = make_lead_agent(model, tools, checkpointer=InMemorySaver())
 
-    events = await collect(run_lead_agent("写个快速排序并交给我", agent=agent, thread_id="th-1"))
+    events = await collect(run_lead_agent("写个快速排序并交给我", agent=agent, thread_id="th-1", sandbox=layout))
 
     presented = [e for e in events if e.type == "files_presented"]
     assert len(presented) == 1
@@ -239,5 +240,5 @@ async def test_presenting_a_file_reaches_the_event_stream(monkeypatch, tmp_path)
 
 def test_every_registered_tool_is_a_base_tool():
     """注册表的产出类型必须干净——下游是 ``create_agent``，它只认 ``BaseTool``。"""
-    tools = build_tools(_config(_entry("ls", "app.tools.file_ops:ls")))
+    tools = build_tools(_config(_entry("ls", "evaharness.sandbox.file_ops:ls")))
     assert all(isinstance(t, BaseTool) for t in tools)

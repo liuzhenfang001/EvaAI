@@ -2,7 +2,7 @@
 
 原先叫 ``plan_exec_fakes``——T16 下线 Plan-Exec 之前，这个文件里同时装着 planner/executor 的
 替身与这些通用的假模型。产线删掉之后只剩通用部分，名字跟着改（它从来就不是 plan-exec 专用的：
-16 个测试文件 import 它，其中只有 3 个用到过 planner/executor 那部分）。
+T16 删完之后是 11 个测试文件 import 它）。
 
 这里装的是**假模型**与最小配置：``ToolCapableFake`` 系（能真走 ``bind_tools``）、
 ``StructuredFake`` 系（按 schema 分派），以及 ``fake_app_config``。工具拿 runtime 的替身

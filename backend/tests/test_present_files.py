@@ -16,16 +16,16 @@ import dataclasses
 import json
 
 import pytest
-from tool_fakes import COORDINATE_CONTEXT, WORKSPACE_CONTEXT, fake_runtime
+from tool_fakes import COORDINATE_CONTEXT, fake_runtime, lead_context
 
 from app.tools import present_files as module
-from app.tools.sandbox import PathNotAllowedError
+from evaharness.sandbox import PathNotAllowedError, SandboxLayout
 
 
-@pytest.fixture(autouse=True)
-def _sandbox_root(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.tools.sandbox.SANDBOX_ROOT", tmp_path)
-    return tmp_path
+@pytest.fixture
+def layout(tmp_path):
+    """这次运行的沙箱布局（根指向 tmp_path）——与 test_file_ops 同一手法。"""
+    return SandboxLayout(root=tmp_path)
 
 
 def _write(root, mount, relative, content="内容"):
@@ -36,7 +36,7 @@ def _write(root, mount, relative, content="内容"):
     return target
 
 
-def _call(paths, sent, context=WORKSPACE_CONTEXT):
+def _call(paths, sent, context):
     """调一次工具。*sent* 收集它送进 custom 流的载荷。"""
     runtime = dataclasses.replace(fake_runtime(context), stream_writer=sent.append)
     return module.present_files.invoke({"runtime": runtime, "paths": paths})
@@ -47,11 +47,11 @@ def _call(paths, sent, context=WORKSPACE_CONTEXT):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_file_under_output_is_presented(_sandbox_root):
-    _write(_sandbox_root, "output", "报告.md")
+def test_a_file_under_output_is_presented(layout):
+    _write(layout.root, "output", "报告.md")
 
     sent: list = []
-    result = _call(["/output/报告.md"], sent)
+    result = _call(["/output/报告.md"], sent, lead_context(layout))
 
     assert "报告.md" in result, "返回值是给模型看的，得说清交了什么"
     assert len(sent) == 1, "一次调用只送一个载荷"
@@ -59,47 +59,47 @@ def test_a_file_under_output_is_presented(_sandbox_root):
     assert [f["path"] for f in sent[0]["files"]] == ["/output/报告.md"]
 
 
-def test_the_payload_carries_name_size_and_mime(_sandbox_root):
+def test_the_payload_carries_name_size_and_mime(layout):
     """这三样是前端画卡片要的全部——少一样前端就得自己去猜或去问后端。"""
-    _write(_sandbox_root, "output", "a.md", "hello")
+    _write(layout.root, "output", "a.md", "hello")
 
     sent: list = []
-    _call(["/output/a.md"], sent)
+    _call(["/output/a.md"], sent, lead_context(layout))
 
     file = sent[0]["files"][0]
     assert file["name"] == "a.md"
-    assert file["size"] == len("hello".encode())
+    assert file["size"] == len(b"hello")
     assert file["mime"] == "text/markdown"
 
 
-def test_several_files_go_out_in_one_payload(_sandbox_root):
+def test_several_files_go_out_in_one_payload(layout):
     """一次调用 = 一条事件 = 一张卡片列 N 个文件，而不是 N 张卡片。"""
-    _write(_sandbox_root, "output", "a.md")
-    _write(_sandbox_root, "output", "sub/b.go")
+    _write(layout.root, "output", "a.md")
+    _write(layout.root, "output", "sub/b.go")
 
     sent: list = []
-    _call(["/output/a.md", "/output/sub/b.go"], sent)
+    _call(["/output/a.md", "/output/sub/b.go"], sent, lead_context(layout))
 
     assert len(sent) == 1
     assert [f["path"] for f in sent[0]["files"]] == ["/output/a.md", "/output/sub/b.go"]
 
 
-def test_an_unknown_extension_leaves_mime_empty(_sandbox_root):
+def test_an_unknown_extension_leaves_mime_empty(layout):
     """``.go`` 之类认不出来就留空——编一个 ``application/octet-stream`` 出来只会让前端画错图标。"""
-    _write(_sandbox_root, "output", "quicksort.go", "package main")
+    _write(layout.root, "output", "quicksort.go", "package main")
 
     sent: list = []
-    _call(["/output/quicksort.go"], sent)
+    _call(["/output/quicksort.go"], sent, lead_context(layout))
 
     assert sent[0]["files"][0]["mime"] is None
 
 
-def test_a_coordinate_shaped_context_also_works(_sandbox_root):
+def test_a_coordinate_shaped_context_also_works(layout):
     """会话 id 有两种上下文形状（``LeadContext`` 对象 / ``{坐标}`` dict），工具都得认。"""
-    _write(_sandbox_root, "output", "a.md")
+    _write(layout.root, "output", "a.md")
 
     sent: list = []
-    _call(["/output/a.md"], sent, context=COORDINATE_CONTEXT)
+    _call(["/output/a.md"], sent, {**COORDINATE_CONTEXT, "sandbox": layout})
 
     assert sent[0]["files"][0]["path"] == "/output/a.md"
 
@@ -109,27 +109,27 @@ def test_a_coordinate_shaped_context_also_works(_sandbox_root):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_payload_never_leaks_the_host_path(_sandbox_root):
+def test_the_payload_never_leaks_the_host_path(layout):
     """载荷会一路到 SSE、journal、浏览器——宿主路径漏出去就是信息泄漏 + 不可移植。"""
-    _write(_sandbox_root, "output", "a.md")
+    _write(layout.root, "output", "a.md")
 
     sent: list = []
-    _call(["/output/a.md"], sent)
+    _call(["/output/a.md"], sent, lead_context(layout))
 
     blob = json.dumps(sent, ensure_ascii=False)
-    assert str(_sandbox_root) not in blob
+    assert str(layout.root) not in blob
     assert ".evaai" not in blob
 
 
-def test_a_refusal_does_not_leak_the_host_path(_sandbox_root):
+def test_a_refusal_does_not_leak_the_host_path(layout):
     """异常文案同样会进模型的上下文（中间件把它转成 ToolMessage），所以也要干净。"""
     sent: list = []
     with pytest.raises(ValueError) as excinfo:
-        _call(["/output/nope.md"], sent)
+        _call(["/output/nope.md"], sent, lead_context(layout))
 
     message = str(excinfo.value)
     assert "/output/nope.md" in message, "得让模型知道是哪个路径"
-    assert str(_sandbox_root) not in message
+    assert str(layout.root) not in message
 
 
 # --------------------------------------------------------------------------- #
@@ -137,69 +137,69 @@ def test_a_refusal_does_not_leak_the_host_path(_sandbox_root):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_workspace_file_is_refused(_sandbox_root):
+def test_a_workspace_file_is_refused(layout):
     """工作台是干活的地方，不是交付的地方——草稿不该出现在用户面前。"""
-    _write(_sandbox_root, "workspace", "draft.md")
+    _write(layout.root, "workspace", "draft.md")
 
     sent: list = []
     with pytest.raises(ValueError, match="/workspace/draft.md"):
-        _call(["/workspace/draft.md"], sent)
+        _call(["/workspace/draft.md"], sent, lead_context(layout))
 
     assert sent == [], "被拒绝的调用不该出卡片"
 
 
-def test_a_relative_path_is_normalized_and_therefore_refused(_sandbox_root):
+def test_a_relative_path_is_normalized_and_therefore_refused(layout):
     """相对路径落到 ``/workspace``，于是正好被挡——提示模型把交付物写全路径。"""
-    _write(_sandbox_root, "workspace", "draft.md")
+    _write(layout.root, "workspace", "draft.md")
 
     sent: list = []
     with pytest.raises(ValueError, match="/output"):
-        _call(["draft.md"], sent)
+        _call(["draft.md"], sent, lead_context(layout))
 
     assert sent == []
 
 
-def test_a_missing_file_is_refused(_sandbox_root):
+def test_a_missing_file_is_refused(layout):
     sent: list = []
     with pytest.raises(ValueError, match="does not exist"):
-        _call(["/output/never-written.md"], sent)
+        _call(["/output/never-written.md"], sent, lead_context(layout))
 
     assert sent == []
 
 
-def test_a_directory_is_refused(_sandbox_root):
+def test_a_directory_is_refused(layout):
     """``ls`` 能列目录，但交付物是文件——目录卡片点开来是没有意义的。"""
-    _write(_sandbox_root, "output", "sub/keep.md")
+    _write(layout.root, "output", "sub/keep.md")
 
     sent: list = []
     with pytest.raises(ValueError, match="directory"):
-        _call(["/output/sub"], sent)
+        _call(["/output/sub"], sent, lead_context(layout))
 
     assert sent == []
 
 
-def test_no_paths_is_refused(_sandbox_root):
+def test_no_paths_is_refused(layout):
     """空调用会产一条空事件、画一张空卡片——那比报个错更难查。"""
     sent: list = []
     with pytest.raises(ValueError, match="no paths"):
-        _call([], sent)
+        _call([], sent, lead_context(layout))
 
     assert sent == []
 
 
-def test_a_traversal_path_is_refused_before_any_lookup(_sandbox_root):
+def test_a_traversal_path_is_refused_before_any_lookup(layout):
     """``..`` 在归一化那一层就被挡掉，根本走不到存在性检查。"""
     sent: list = []
     with pytest.raises(PathNotAllowedError):
-        _call(["/output/../workspace/draft.md"], sent)
+        _call(["/output/../workspace/draft.md"], sent, lead_context(layout))
 
     assert sent == []
 
 
-def test_an_absolute_host_path_is_refused(_sandbox_root):
+def test_an_absolute_host_path_is_refused(layout):
     """模型写出本机绝对路径时，也不能变成一次成功的呈现。"""
     sent: list = []
     with pytest.raises(PathNotAllowedError):
-        _call(["C:/Windows/win.ini"], sent)
+        _call(["C:/Windows/win.ini"], sent, lead_context(layout))
 
     assert sent == []

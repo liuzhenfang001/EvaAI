@@ -16,10 +16,10 @@ from __future__ import annotations
 import mimetypes
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from app.tools.sandbox import PathNotAllowedError, Sandbox
+from evaharness.sandbox import PathNotAllowedError
 
 router = APIRouter(prefix="/threads", tags=["files"])
 
@@ -35,7 +35,7 @@ _ACTIVE_SUFFIXES = frozenset({".html", ".htm", ".xhtml", ".svg", ".xml"})
 
 
 @router.get("/{thread_id}/files/{path:path}")
-async def get_output_file(thread_id: str, path: str, download: bool = False) -> FileResponse:
+async def get_output_file(thread_id: str, path: str, request: Request, download: bool = False) -> FileResponse:
     """把 ``/output/<path>`` 的文件发出去。
 
     ``path`` 是**相对 /output 的路径**（前端从事件的 ``/output/xxx`` 里摘掉前缀得到）。
@@ -43,16 +43,17 @@ async def get_output_file(thread_id: str, path: str, download: bool = False) -> 
     ``download=true`` 强制附件——卡片上的按钮写的就是「下载」，而对 ``.png`` 这类浏览器
     自己会渲染的类型，光靠 inline 点开只会新开一个标签页，看着不像下载。
 
-    先查会话存在再建 :class:`Sandbox`：构造它会顺手建目录，而一次 404 的请求不该在磁盘上
-    留下痕迹（见 :meth:`~app.tools.sandbox.Sandbox.exists`）。
+    先查会话存在再建沙箱：构造它会顺手建目录，而一次 404 的请求不该在磁盘上留下痕迹
+    （见 :meth:`~evaharness.sandbox.paths.SandboxLayout.exists`）。
     """
-    if not Sandbox.exists(thread_id):
+    layout = request.app.state.sandbox_layout
+    if not layout.exists(thread_id):
         raise HTTPException(status_code=404, detail=f"没有这个会话：{thread_id}")
 
     try:
         # 前缀在这里拼死，调用方给什么都出不了 /output。resolve 会做归一化与两层越界防护
         # （`..`、绝对路径、符号链接/junction 逃逸都在那儿被挡）。
-        target = Sandbox(thread_id).resolve(f"/output/{path}")
+        target = layout.session(thread_id).resolve(f"/output/{path}")
     except PathNotAllowedError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 

@@ -1,13 +1,18 @@
 """docker 沙箱：把命令送进**本会话私有**的 Linux 容器里执行。
 
-:mod:`app.tools.sandbox`（软沙箱）管的是「模型的虚拟路径 → 宿主目录」这一段；本模块管的是
+:mod:`evaharness.sandbox.paths`（软沙箱）管的是「模型的虚拟路径 → 宿主目录」这一段；本模块管的是
 「宿主目录 → 容器内路径」那一段。ADR-0012 说的「将来接真沙箱时，换的是这一层『挂载表怎么渲染
 成宿主路径』」，换的就是这里——工具签名与虚拟路径的语义都没动。
+
+**布局从外面传进来**，本模块自己不含任何全局：每个入口（`run_command` / `reconcile_orphans` /
+`remove_session_container` / `ensure_mount_check`）第一个参数都是
+:class:`~evaharness.sandbox.paths.SandboxLayout`。宿主根与挂载表是**部署策略**，由调用方决定
+（真沙箱 vs 软沙箱的分界就是这里没有第二个权威）。
 
 **容器内路径就是虚拟路径。** ``Sandbox.resolve()`` 给出某个挂载点的宿主目录，我们把它 bind 到
 容器里**同名**路径。于是模型仍然只面对一套坐标系（``/workspace`` 等四个），而文件工具与容器里
 跑的命令看到的是**同一份文件**——不是靠约定对齐，是同一个目录。宿主路径永远不进模型上下文，
-docker 自己吐的报错也要过 :func:`mask`。
+docker 自己吐的报错也要过 :meth:`SandboxLayout.mask`。
 
 **每会话一个长驻容器**，不是每次调用一个：装过的包在会话里留存。容器名由会话 id 推出
 （``evaai-<会话>``），所以**不需要任何内存映射**——每次调用先试 ``exec``，容器不可用才建。
@@ -16,12 +21,14 @@ docker 自己吐的报错也要过 :func:`mask`。
 
 **失败形态**：docker 这一层失败（CLI 不在、daemon 连不上、容器建不出来）raise
 :class:`DockerError`，由 ``ToolErrorHandlingMiddleware`` 转成 ``status="error"`` 的 ToolMessage——
-所以**运行期**的文案是英文、且不含宿主路径（与 :mod:`app.tools.file_ops` 同一口径）。
+所以**运行期**的文案是英文、且不含宿主路径（与 :mod:`evaharness.sandbox.file_ops` 同一口径）。
 而**命令自己的非零退出码不是失败**，是结果：照常返回、附上退出码（渲染在
-:mod:`app.tools.bash`）。这是对 ADR-0012 §6「失败一律 raise」的**有意偏离**——那条针对的是
+:mod:`evaharness.sandbox.bash`）。这是对 ADR-0012 §6「失败一律 raise」的**有意偏离**——那条针对的是
 「工具没能完成它的工作」，而 shell 命令的非零退出是**结果**。
 
-`check_docker_ready` 是启动期校验，文案给运维看，所以是中文（与 :mod:`app.tools.registry` 一致）。
+`check_docker_ready` 是启动期校验（由建工具的工厂调），文案给运维看，所以是中文。它**不碰
+layout**：那一步只需要镜像名——哨兵文件由 app 在 lifespan 里另调 :func:`ensure_mount_check`，
+因为启动期校验发生时布局还不存在。
 
 **为什么不改文件工具**：既然容器内路径就是虚拟路径，再写一套「docker 内文件操作」等于造出两个
 坐标系、两个权威，哪天某个挂载点在两边漂了，模型会看到两个互相矛盾的世界。ADR-0012 那句
@@ -41,13 +48,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-import app.tools.sandbox as sandbox
+from evaharness.sandbox.paths import Sandbox, SandboxLayout
 
 logger = logging.getLogger(__name__)
-
-# 不能写成 `from app.tools.sandbox import SANDBOX_ROOT`：那会在 import 时把值绑死，测试
-# monkeypatch 模块全局就再也不生效了（sandbox.py 对同一件事有专门一段注释）。
-# 依赖 `sandbox.SANDBOX_ROOT` / `sandbox.skills_view_root()` 这类**调用时**读全局的写法。
 
 _BASH = "bash"
 _WORKDIR = "/workspace"
@@ -123,7 +126,7 @@ class Runner(Protocol):
     """跑一次 docker 命令行。
 
     做成协议是为了在测试里注入假实现——工具层不直接碰 ``subprocess``，于是单测不需要本机有
-    docker（与 :mod:`app.tools.web` 在 httpx 边界打桩同一手法）。
+    docker（与联网工具在 httpx 边界打桩同一手法）。
     """
 
     def invoke(self, argv: list[str], *, timeout: float) -> Completed: ...
@@ -138,7 +141,9 @@ def _read_bounded(stream) -> tuple[bytes, bool]:
         if not chunk:
             return b"".join(chunks), False
         remaining = _READ_CAP_BYTES - total
-        if len(chunk) >= remaining:
+        if len(chunk) > remaining:
+            # **严格大于**才是「有东西被丢掉」。正好读满时继续循环：下一轮要么读到 EOF
+            # （那就没截断），要么读到更多（那时 remaining 已是 0，必然判成截断）。
             chunks.append(chunk[:remaining])
             return b"".join(chunks), True
         chunks.append(chunk)
@@ -146,7 +151,7 @@ def _read_bounded(stream) -> tuple[bytes, bool]:
 
 
 class DockerCli:
-    """真的去跑 ``docker`` 可执行文件。**同步**，由 :mod:`app.tools.bash` 丢进 worker 线程。
+    """真的去跑 ``docker`` 可执行文件。**同步**，由 bash 工具丢进 worker 线程。
 
     为什么不用 ``asyncio.create_subprocess_exec``：它在 Windows 上要求 Proactor 事件循环，
     而 uvicorn 为了 Ctrl+C 的历史原因可能跑在 Selector 上，那时直接 ``NotImplementedError``。
@@ -212,14 +217,14 @@ def container_name(session_id: str) -> str:
     return f"{_CONTAINER_PREFIX}{session_id}"
 
 
-def deployment_id() -> str:
+def deployment_id(layout: SandboxLayout) -> str:
     """本部署的稳定标识，**跨重启不变**。
 
     不用「每次启动生成一个 uuid」：那会让启动期清理把上一轮留下的容器全删掉，也就毁掉了
     「后端重启后仍存活的会话复用原容器」这件事。用宿主根路径的哈希——同一份数据目录就是同一个
     部署，清理只扫自己这一份。
     """
-    return hashlib.sha1(str(Path(sandbox.SANDBOX_ROOT).resolve()).encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(str(layout.root).encode("utf-8")).hexdigest()[:12]
 
 
 def _host_path(path: Path) -> str:
@@ -232,12 +237,12 @@ def _host_path(path: Path) -> str:
     return str(path).replace("\\", "/")
 
 
-def mount_check_dir() -> Path:
+def mount_check_dir(layout: SandboxLayout) -> Path:
     """哨兵目录的宿主位置（见 :func:`ensure_mount_check`）。"""
-    return Path(sandbox.SANDBOX_ROOT) / _MOUNT_CHECK_DIR
+    return layout.root / _MOUNT_CHECK_DIR
 
 
-def ensure_mount_check() -> Path:
+def ensure_mount_check(layout: SandboxLayout) -> Path:
     """建出哨兵文件，返回它的目录。
 
     **为什么需要它**：Docker Desktop 没共享某个盘符时，``-v D:/…`` **不报错**——它会在容器里
@@ -245,43 +250,35 @@ def ensure_mount_check() -> Path:
     区别（Mount 条目照样在）。所以挂一个模型看不见的哨兵进去，容器建好后探一次：哨兵不在，
     就是盘符没共享。把最坏的那种静默失败变成响的（与 ADR-0012 记「虚拟路径静默退化」同一取向）。
     """
-    directory = mount_check_dir()
+    directory = mount_check_dir(layout)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / _MOUNT_CHECK_NAME).write_text("evaai\n", encoding="utf-8")
     return directory
 
 
-def _host_forms() -> set[str]:
-    """宿主根的各种写法——掩码要盖住 docker 可能吐出来的每一样。"""
-    root = Path(sandbox.SANDBOX_ROOT)
-    forms = {str(root), str(root.resolve())}
-    forms |= {form.replace("\\", "/") for form in tuple(forms)}
-    forms |= {form[0].lower() + form[1:] for form in tuple(forms) if len(form) > 1 and form[1] == ":"}
-    forms |= {f"\\\\?\\{form}" for form in tuple(forms) if "\\" in form}
-    # 太短的串（比如根目录）替换起来会误伤正文。
-    return {form for form in forms if len(form) > 4}
+def _short(text: str, layout: SandboxLayout, limit: int = 300) -> str:
+    """异常文案要短——中间件会截到 500 字符，而且模型只需要读到「为什么」。
 
-
-def mask(text: str) -> str:
-    """把宿主根从文本里抹掉——输出与漏网异常的**最后一道网**。
-
-    比 :meth:`app.tools.sandbox.Sandbox.mask` 宽：docker 的报错会吐 ``\\\\?\\D:\\…``、
-    ``D:/…``（正斜杠）、小写盘符这类变体。ADR-0012 记过一次被路径写法咬到的实测
-    （``%TEMP%`` 的 8.3 短名 ``ADMINI~1``），所以这里宁宽勿窄。
+    掩码走 :meth:`SandboxLayout.mask`（「宿主根的各种写法」那一整套住在 paths.py）：
+    **运行期**的文案是模型看得见的，必须抹掉宿主路径。
     """
-    for form in _host_forms():
-        text = text.replace(form, "<evaai>")
-    return text
-
-
-def _short(text: str, limit: int = 300) -> str:
-    """异常文案要短——中间件会截到 500 字符，而且模型只需要读到「为什么」。"""
-    collapsed = " ".join(mask(text).split())
+    collapsed = " ".join(layout.mask(text).split())
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 3] + "..."
 
 
-def _detail(result: Completed) -> str:
-    return _short(result.output.decode("utf-8", errors="replace")) or f"exit code {result.returncode}"
+def _detail(result: Completed, layout: SandboxLayout) -> str:
+    return _short(result.output.decode("utf-8", errors="replace"), layout) or f"exit code {result.returncode}"
+
+
+def _plain_detail(result: Completed) -> str:
+    """启动期那几条报错的详情——**不掩码**。
+
+    启动期还没有 layout（校验发生在注册表建工具的那一刻），而这几条 docker 报错说的是
+    CLI / daemon / 镜像，不涉及挂载，所以不带宿主路径；文案本身也是给运维看的中文，
+    不进模型上下文。
+    """
+    collapsed = " ".join(result.output.decode("utf-8", errors="replace").split())
+    return collapsed[:297] + "..." if len(collapsed) > 300 else collapsed
 
 
 # --------------------------------------------------------------------------- #
@@ -297,7 +294,7 @@ def check_docker_ready(image: str, *, runner: Runner | None = None) -> None:
     而那时离「你刚改了配置」已经很远（ADR-0012 2b 的教训：缺配置的失败模式要按实测写）。
 
     Raises:
-        DockerError: 文案是**中文**——这一条给运维看，与 :mod:`app.tools.registry` 同一口径。
+        DockerError: 文案是**中文**——这一条给运维看，与注册表的启动期校验同一口径。
     """
     cli = runner or DockerCli()
 
@@ -311,7 +308,7 @@ def check_docker_ready(image: str, *, runner: Runner | None = None) -> None:
     if info.returncode != 0:
         raise DockerError(
             "docker daemon 连不上，bash 工具没法用。确认 Docker Desktop 已经启动，然后重启服务。"
-            f"（docker info 说：{_detail(info)}）"
+            f"（docker info 说：{_plain_detail(info)}）"
         )
 
     inspected = cli.invoke(["docker", "image", "inspect", image], timeout=_DOCKER_TIMEOUT)
@@ -327,10 +324,8 @@ def check_docker_ready(image: str, *, runner: Runner | None = None) -> None:
     if probe.returncode != 0:
         raise DockerError(
             f"镜像 {image!r} 里缺 bash / timeout / sleep，不能当沙箱用。换一个带 GNU coreutils 的镜像。"
-            f"（探针说：{_detail(probe)}）"
+            f"（探针说：{_plain_detail(probe)}）"
         )
-
-    ensure_mount_check()
 
 
 # --------------------------------------------------------------------------- #
@@ -338,20 +333,20 @@ def check_docker_ready(image: str, *, runner: Runner | None = None) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _mount_specs(box: sandbox.Sandbox) -> list[str]:
+def _mount_specs(box: Sandbox) -> list[str]:
     """四个挂载点的 ``-v`` 参数：宿主目录来自 :meth:`Sandbox.resolve`，容器内用**虚拟路径**。
 
     ``/input`` 与 ``/skills`` 带 ``:ro``——只读因此从「工具自己遵守的约定」变成 **docker 强制的
     边界**：容器里的 ``touch /input/x`` 会真的失败，不是我们拦下来的。
     """
     specs: list[str] = []
-    for mount in sandbox.MOUNTS:
+    for mount in box.layout.mounts:
         host = _host_path(box.resolve(mount.virtual))
         specs += ["-v", f"{host}:{mount.virtual}" + ("" if mount.writable else ":ro")]
     return specs
 
 
-def _create_argv(box: sandbox.Sandbox, spec: SandboxSpec) -> list[str]:
+def _create_argv(box: Sandbox, spec: SandboxSpec) -> list[str]:
     """``docker run -d``：建一个长驻容器，主进程是 ``sleep infinity``。"""
     argv = [
         "docker",
@@ -363,7 +358,7 @@ def _create_argv(box: sandbox.Sandbox, spec: SandboxSpec) -> list[str]:
         "--label",
         f"{_LABEL_MANAGED}=1",
         "--label",
-        f"{_LABEL_DEPLOYMENT}={deployment_id()}",
+        f"{_LABEL_DEPLOYMENT}={deployment_id(box.layout)}",
         "--label",
         f"{_LABEL_SESSION}={box.session_id}",
         "--network",
@@ -386,7 +381,7 @@ def _create_argv(box: sandbox.Sandbox, spec: SandboxSpec) -> list[str]:
         argv += ["--pids-limit", str(spec.pids_limit)]
 
     argv += _mount_specs(box)
-    argv += ["-v", f"{_host_path(mount_check_dir())}:{_MOUNT_CHECK_TARGET}:ro"]
+    argv += ["-v", f"{_host_path(mount_check_dir(box.layout))}:{_MOUNT_CHECK_TARGET}:ro"]
 
     # 覆盖镜像自带的 ENTRYPOINT。AIO 沙箱镜像的 entrypoint 是 /opt/gem/run.sh（Jupyter /
     # code-server / VNC / 内嵌浏览器一整套服务），不覆盖的话每个会话都会拉起那一整套。
@@ -425,6 +420,7 @@ def _exec_argv(session_id: str, command: str, spec: SandboxSpec) -> list[str]:
 
 
 def run_command(
+    layout: SandboxLayout,
     session_id: str,
     command: str,
     spec: SandboxSpec,
@@ -439,7 +435,7 @@ def run_command(
     cli = runner or DockerCli()
     # 构造 Sandbox 会顺手把会话的三个目录建出来——`-v` 的来源必须是真目录，否则 docker 会在
     # 宿主上建一个 root 属主的空目录。
-    box = sandbox.Sandbox(session_id)
+    box = layout.session(session_id)
     deadline = spec.timeout + _CLIENT_GRACE_SECONDS
 
     executed = cli.invoke(_exec_argv(session_id, command, spec), timeout=deadline)
@@ -455,14 +451,14 @@ def _container_gone(result: Completed) -> bool:
     return result.returncode != 0 and any(marker in result.output for marker in _GONE_MARKERS)
 
 
-def _start_container(cli: Runner, box: sandbox.Sandbox, spec: SandboxSpec) -> None:
+def _start_container(cli: Runner, box: Sandbox, spec: SandboxSpec) -> None:
     created = cli.invoke(_create_argv(box, spec), timeout=_CREATE_TIMEOUT)
     if created.returncode != 0:
         if _ALREADY_EXISTS in created.output:
             # 并发首次调用：另一个请求刚把这个名字占了，容器是好的，直接用。
             # docker 的全局名字唯一性就是这里的互斥锁。
             return
-        raise DockerError(f"could not start the sandbox container: {_detail(created)}")
+        raise DockerError(f"could not start the sandbox container: {_detail(created, box.layout)}")
 
     probe = cli.invoke(
         ["docker", "exec", container_name(box.session_id), "test", "-f", f"{_MOUNT_CHECK_TARGET}/{_MOUNT_CHECK_NAME}"],
@@ -479,7 +475,7 @@ def _start_container(cli: Runner, box: sandbox.Sandbox, spec: SandboxSpec) -> No
 # --------------------------------------------------------------------------- #
 
 
-def _list_argv(session_id: str | None = None, *, with_session_label: bool = False) -> list[str]:
+def _list_argv(layout: SandboxLayout, session_id: str | None = None, *, with_session_label: bool = False) -> list[str]:
     """列本部署的沙箱容器。
 
     ``with_session_label`` 时每行是 ``ID<TAB>会话``（清理孤儿要按会话判存活）；否则只回 ID。
@@ -492,7 +488,7 @@ def _list_argv(session_id: str | None = None, *, with_session_label: bool = Fals
         "--filter",
         f"label={_LABEL_MANAGED}=1",
         "--filter",
-        f"label={_LABEL_DEPLOYMENT}={deployment_id()}",
+        f"label={_LABEL_DEPLOYMENT}={deployment_id(layout)}",
     ]
     if session_id is not None:
         argv += ["--filter", f"label={_LABEL_SESSION}={session_id}"]
@@ -501,25 +497,25 @@ def _list_argv(session_id: str | None = None, *, with_session_label: bool = Fals
     return argv
 
 
-def reconcile_orphans(live_sessions: Collection[str], *, runner: Runner | None = None) -> int:
+def reconcile_orphans(layout: SandboxLayout, live_sessions: Collection[str], *, runner: Runner | None = None) -> int:
     """启动期清理：删掉「本部署建的、但会话已不在 journal 里」的容器。返回删了几个。
 
     **判据为什么是 journal 而不是会话目录**：ADR-0012 记着「删会话不删文件」这条债——
     ``DELETE /threads/{id}`` 并不删 ``.evaai/user/{会话}/``，所以「目录不存在」这个判据几乎
     永不命中，会一个都清不掉。
 
-    **永不抛**：清理不该拦着服务起来（与 :func:`app.gateway.app._prune_checkpoints` 同一形态），
+    **永不抛**：清理不该拦着服务起来（与启动期的 checkpoint 清理同一形态），
     失败只记日志。这条由调用方负责吞异常，这里自己也不往上抛。
     """
     cli = runner or DockerCli()
     live = set(live_sessions)
     try:
-        listed = cli.invoke(_list_argv(with_session_label=True), timeout=_DOCKER_TIMEOUT)
+        listed = cli.invoke(_list_argv(layout, with_session_label=True), timeout=_DOCKER_TIMEOUT)
     except Exception:
         logger.warning("沙箱容器清理失败，跳过", exc_info=True)
         return 0
     if listed.returncode != 0:
-        logger.warning("沙箱容器清理失败，跳过：%s", _detail(listed))
+        logger.warning("沙箱容器清理失败，跳过：%s", _detail(listed, layout))
         return 0
 
     removed = 0
@@ -535,26 +531,26 @@ def reconcile_orphans(live_sessions: Collection[str], *, runner: Runner | None =
         if result.returncode == 0:
             removed += 1
         else:
-            logger.warning("删不掉孤儿沙箱容器 %s：%s", container_id, _detail(result))
+            logger.warning("删不掉孤儿沙箱容器 %s：%s", container_id, _detail(result, layout))
     return removed
 
 
-def remove_session_container(session_id: str, *, runner: Runner | None = None) -> int:
+def remove_session_container(layout: SandboxLayout, session_id: str, *, runner: Runner | None = None) -> int:
     """删掉某个会话的容器，返回删了几个（``DELETE /threads/{id}`` 用）。
 
     按 label 找而不是按容器名：名字是 ``evaai-<会话>``，同机另一个部署撞上同一个会话 id 时会误删。
     best-effort 由调用方决定——这里该失败就抛。
     """
     cli = runner or DockerCli()
-    listed = cli.invoke(_list_argv(session_id), timeout=_DOCKER_TIMEOUT)
+    listed = cli.invoke(_list_argv(layout, session_id), timeout=_DOCKER_TIMEOUT)
     if listed.returncode != 0:
-        raise DockerError(f"could not list sandbox containers: {_detail(listed)}")
+        raise DockerError(f"could not list sandbox containers: {_detail(listed, layout)}")
 
     removed = 0
     for container_id in listed.output.decode("utf-8", errors="replace").split():
         result = cli.invoke(["docker", "rm", "-f", container_id], timeout=_DOCKER_TIMEOUT)
         if result.returncode != 0:
-            raise DockerError(f"could not remove sandbox container {container_id}: {_detail(result)}")
+            raise DockerError(f"could not remove sandbox container {container_id}: {_detail(result, layout)}")
         removed += 1
     return removed
 
@@ -569,7 +565,6 @@ __all__ = [
     "container_name",
     "deployment_id",
     "ensure_mount_check",
-    "mask",
     "mount_check_dir",
     "reconcile_orphans",
     "remove_session_container",

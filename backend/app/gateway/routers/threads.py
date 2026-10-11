@@ -14,9 +14,9 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app.tools import docker_sandbox
 from evaharness.checkpoint import delete_session_checkpoints
 from evaharness.journal.stores import JournalEntry, JournalThread
+from evaharness.sandbox import docker
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,8 @@ async def _delete_sandbox_container(request: Request, thread_id: str) -> None:
     if not getattr(request.app.state, "bash_enabled", False):
         return
     try:
-        removed = await asyncio.to_thread(docker_sandbox.remove_session_container, thread_id)
+        layout = request.app.state.sandbox_layout
+        removed = await asyncio.to_thread(docker.remove_session_container, layout, thread_id)
     except Exception:
         logger.warning("清理会话 %s 的沙箱容器失败", thread_id, exc_info=True)
         return

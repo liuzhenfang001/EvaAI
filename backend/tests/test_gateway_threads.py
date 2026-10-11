@@ -9,6 +9,7 @@ planner/executor，那条路径已下线，见 ADR-0021）。
 
 import itertools
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -21,14 +22,17 @@ from app.gateway.sse import sse_consumer
 from evaharness.agents.lead_agent import LEAD_LANE, make_lead_agent, run_lead_agent
 from evaharness.journal import RunJournal, journaled
 from evaharness.journal.stores import JsonlJournalStore, MemoryJournalStore
+from evaharness.sandbox import SandboxLayout
 
 THREAD = "th-1"
 
 
-def _client(store, *, bash_enabled: bool = False) -> httpx.AsyncClient:
+def _client(store, *, bash_enabled: bool = False, sandbox_layout=None) -> httpx.AsyncClient:
     app = FastAPI()
     app.state.journal_store = store
     app.state.bash_enabled = bash_enabled
+    # 删容器要按 deployment label 找，而那个 label 由布局的宿主根算出——所以路由需要它。
+    app.state.sandbox_layout = sandbox_layout or SandboxLayout(root=Path("C:/evaai-unused"))
     app.include_router(threads.router)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
@@ -279,7 +283,7 @@ async def test_delete_also_removes_the_sessions_sandbox_container(monkeypatch):
     seen: list[str] = []
     store = MemoryJournalStore()
     await _run(store, "要删掉的")
-    monkeypatch.setattr(threads.docker_sandbox, "remove_session_container", seen.append)
+    monkeypatch.setattr(threads.docker, "remove_session_container", lambda _layout, session: seen.append(session))
 
     async with _client(store, bash_enabled=True) as client:
         assert (await client.delete(f"/threads/{THREAD}")).status_code == 204
@@ -291,12 +295,12 @@ async def test_delete_also_removes_the_sessions_sandbox_container(monkeypatch):
 async def test_a_failing_container_removal_still_returns_204(monkeypatch):
     """收尾失败不该让调用方以为没删掉——会话本身确实已经没了。"""
 
-    def boom(_session):  # noqa: ANN001
+    def boom(_layout, _session):  # noqa: ANN001
         raise RuntimeError("docker 不见了")
 
     store = MemoryJournalStore()
     await _run(store, "要删掉的")
-    monkeypatch.setattr(threads.docker_sandbox, "remove_session_container", boom)
+    monkeypatch.setattr(threads.docker, "remove_session_container", boom)
 
     async with _client(store, bash_enabled=True) as client:
         assert (await client.delete(f"/threads/{THREAD}")).status_code == 204
@@ -306,12 +310,12 @@ async def test_a_failing_container_removal_still_returns_204(monkeypatch):
 async def test_delete_never_touches_docker_without_bash(monkeypatch):
     """没启用 bash 的部署没有容器可删，一个 docker 命令都不该发。"""
 
-    def boom(_session):  # noqa: ANN001
+    def boom(_layout, _session):  # noqa: ANN001
         raise AssertionError("没启用 bash 却碰了 docker")
 
     store = MemoryJournalStore()
     await _run(store, "要删掉的")
-    monkeypatch.setattr(threads.docker_sandbox, "remove_session_container", boom)
+    monkeypatch.setattr(threads.docker, "remove_session_container", boom)
 
     async with _client(store) as client:
         assert (await client.delete(f"/threads/{THREAD}")).status_code == 204

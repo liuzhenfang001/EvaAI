@@ -17,25 +17,36 @@ import pytest
 from fastapi import FastAPI
 
 from app.gateway.routers import files
+from evaharness.sandbox import SandboxLayout
 
 THREAD = "th-1"
 
 
-@pytest.fixture(autouse=True)
-def _sandbox_root(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.tools.sandbox.SANDBOX_ROOT", tmp_path)
-    return tmp_path
+@pytest.fixture
+def sandbox_layout(tmp_path):
+    """沙箱布局指向 ``tmp_path``（**别碰真的 backend/.evaai**）。"""
+    return SandboxLayout(root=tmp_path)
 
 
 @pytest.fixture
-def client() -> httpx.AsyncClient:
+def _sandbox_root(sandbox_layout):
+    """这条路由要的宿主根——从布局上取，测试里用它铺文件。"""
+    return sandbox_layout.root
+
+
+@pytest.fixture
+def client(sandbox_layout) -> httpx.AsyncClient:
     """只挂这一个 router 的应用——CORS、lifespan 这些层与本片无关。
 
     夹具是**同步**的、直接返回客户端：仓库里没有异步夹具的先例，而 ``ASGITransport`` 不需要
     客户端先 start（它不走网络），所以没有必要为了一个 ``async with`` 引入
     ``pytest_asyncio.fixture``。
+
+    ``app.state.sandbox_layout`` 是这条路由的注入契约（T17 起：路由从 state 拿布局，
+    不再有模块全局）。
     """
     app = FastAPI()
+    app.state.sandbox_layout = sandbox_layout
     app.include_router(files.router)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 

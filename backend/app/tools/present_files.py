@@ -8,14 +8,15 @@
 送一个载荷（见 :mod:`evaharness.agents.lead_agent.custom_events`），由 runner 翻成
 ``files_presented`` 事件。事件经 SSE 到前端画卡片、经 RunJournal 落盘，**刷新后卡片仍在**。
 
-**一处刻意的偏离 DeerFlow**：它把这个工具放在 harness（它自己的 paths 模块也在 harness），
-我们只能放 app——它依赖 :class:`~app.tools.sandbox.Sandbox`，而 ``test_harness_boundary.py``
-禁止 harness import app。规则：**harness 拥有机制与契约，app 拥有策略与路径**。
+**为什么它在 app 而文件工具在 harness**：T17 之前这里的理由曾是「它依赖 app 层的 Sandbox，
+而 boundary 测试禁止 harness import app」——沙箱搬进 harness 之后那条理由就到期了。现在留下
+它的理由更实在：它是**交付语义**（产出一条 ``files_presented`` 事件、只放行 ``/output``），
+而 :mod:`evaharness.sandbox.file_ops` 那六个是通用的读写。
 
 **只放行 ``/output``**：``/workspace`` 是工作台（草稿与中间产物），改坏不可逆的 ``/input`` 与
 ``/skills`` 更是只读。把「交付物」与「干活的地方」分开是沙箱本来就定好的语义，这里只是沿用。
 
-**失败一律 raise**，不返回 ``Error: ...`` 字符串——与 :mod:`app.tools.file_ops` 同一条规矩
+**失败一律 raise**，不返回 ``Error: ...`` 字符串——与 :mod:`evaharness.sandbox.file_ops` 同一条规矩
 （见该模块 docstring 与 ADR-0012）。
 """
 
@@ -27,9 +28,8 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
-from app.tools.sandbox import Sandbox
 from evaharness.agents.lead_agent import present_files_payload
-from evaharness.agents.middlewares.context import session_id
+from evaharness.agents.middlewares.context import sandbox_layout, session_id
 
 PRESENT_FILES_NAME = "present_files"
 """工具名。**子 agent 的图里必须把它排除掉**——子 agent 走 ``ainvoke``、没有 custom 模式，
@@ -54,7 +54,7 @@ def present_files(runtime: ToolRuntime[Any], paths: list[str]) -> str:
     if not paths:
         raise ValueError("no paths given — pass the /output files you want to hand over")
 
-    box = Sandbox(session_id(runtime))
+    box = sandbox_layout(runtime).session(session_id(runtime))
     files: list[dict[str, Any]] = []
 
     for path in paths:

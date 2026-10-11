@@ -116,6 +116,15 @@ class TestOpenMcpTools:
             ]
         assert "a:exit" in log and "b:exit" in log
 
+    async def test_a_disabled_server_is_skipped_here_too(self):
+        """另一条入口（一次运行）也认这个开关——不然「换条路就连上了禁用的 server」。"""
+        log: list[str] = []
+        servers = {"off": stdio("off", enabled=False), "on": stdio("on")}
+
+        async with open_mcp_tools(servers, adapter_factory=factory(log)) as tools:
+            assert sorted(t.name for t in tools) == ["mcp__on__list_directory", "mcp__on__read_file"]
+        assert "off" not in log
+
     async def test_one_broken_server_does_not_take_down_the_others(self, caplog):
         """决策 #2：跳过 + 响亮警告，不是整体失败。"""
         log: list[str] = []
@@ -217,6 +226,24 @@ class TestLoadMcpTools:
         # 超时的警告必须**自己说清是超时**：`asyncio.timeout` 抛的 TimeoutError 的 str() 是空的，
         # 不单独接住的话日志只有一句「TimeoutError」，查的人根本不知道是慢还是配错了。
         assert "超时" in caplog.text
+
+    async def test_a_disabled_server_is_never_connected(self, caplog):
+        """关掉 = **根本不建连**，不是「连上再把工具藏起来」。
+
+        这条是那个开关存在的全部理由：启用的 server 要付启动开销（stdio 会 spawn 子进程，
+        首次 npx 实测 30.9 秒）。所以断言落在「它从没进过连接那一段」，而不只是「工具里没有它」。
+        """
+        caplog.set_level(logging.INFO)
+        log: list[str] = []
+
+        tools = await load_mcp_tools(
+            {"off": stdio("off", enabled=False), "on": stdio("on")},
+            adapter_factory=factory(log),
+        )
+
+        assert [t.name for t in tools] == ["mcp__on__list_directory", "mcp__on__read_file"]
+        assert log == ["on:enter", "on:list(bypass)", "on:exit"], "禁用的那个一次都不该出现"
+        assert "已禁用" in caplog.text, "跳过不是静默的——不然「为什么没有它的工具」无从查起"
 
     async def test_no_servers_means_no_work_at_all(self):
         tools = await load_mcp_tools({})

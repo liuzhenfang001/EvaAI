@@ -23,6 +23,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from evaharness.agents.middlewares import StepBudgetMiddleware, build_default_middlewares
 from evaharness.config.app_config import SummarizationConfig
+from evaharness.sandbox.paths import SandboxLayout
 
 LEAD_LANE = "main"
 """lead agent 在事件流里的泳道 id。
@@ -69,11 +70,18 @@ class LeadContext:
     子 agent 的图复用同一个类型，只是 ``thread_id`` 换成它自己的运行级坐标、
     ``session_id`` 仍是同一个会话：派发出来的子 agent 属于**会话**，不属于主 Agent
     那个 checkpoint thread。
+
+    第四个字段 ``sandbox`` 是**部署策略**（宿主根 + 挂载表），见
+    :class:`~evaharness.sandbox.paths.SandboxLayout`。它**有默认值**：不碰文件的图（中间的
+    中间件、纯推理的测试）不必构造它，而用了文件工具却没注入布局的运行会**响亮地失败**
+    （:func:`~evaharness.agents.middlewares.context.sandbox_layout` 取不到就抛），
+    不是悄悄写进某个猜出来的目录。
     """
 
     session_id: str
     thread_id: str
     run_id: str
+    sandbox: SandboxLayout | None = None
 
 
 def build_lead_middlewares(

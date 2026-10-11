@@ -32,7 +32,6 @@ from langchain.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 
 from app.prompts import BASH_SECTION, SUBAGENT_PROMPT, SYSTEM_PROMPT
-from app.tools.bash import BASH_TOOL_NAME
 from app.tools.present_files import PRESENT_FILES_NAME
 from evaharness.agents.lead_agent import (
     build_lead_middlewares,
@@ -43,6 +42,7 @@ from evaharness.agents.lead_agent import (
 from evaharness.agents.options import RunOptions
 from evaharness.config.app_config import AppConfig
 from evaharness.models.factory import create_chat_model
+from evaharness.sandbox import BASH_TOOL_NAME
 from evaharness.skills import Skill, render_skills_section
 
 __all__ = ["AgentFactory"]

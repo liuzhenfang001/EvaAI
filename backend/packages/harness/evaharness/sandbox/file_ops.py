@@ -4,7 +4,7 @@
 第 3 项）本来就是干这个的——工具里再兜一次会让失败有**两种**形状，而且它转出来的
 ToolMessage 带 ``status="error"``，模型与框架都认得出；一条内容是 ``"Error: ..."`` 的正常
 返回值在摘要压缩时与正文没有区别。代价是异常文案要短（中间件截到 500 字符）且**不含宿主
-路径**——所以路径相关的话术一律经 :class:`~app.tools.sandbox.Sandbox` 的虚拟路径措辞。
+路径**——所以路径相关的话术一律经 :class:`~evaharness.sandbox.paths.Sandbox` 的虚拟路径措辞。
 
 输出与异常用英文：模型侧（系统提示词、中间件的兜底句）本来就是英文，工具跟着走。
 """
@@ -20,8 +20,8 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
-from app.tools.sandbox import Sandbox
-from evaharness.agents.middlewares.context import session_id
+from evaharness.agents.middlewares.context import sandbox_layout, session_id
+from evaharness.sandbox.paths import Sandbox
 
 MAX_READ_CHARS = 16_000
 """``read_file`` 单次返回上限。
@@ -59,8 +59,12 @@ def _max_write_bytes() -> int:
 
 
 def _sandbox(runtime: ToolRuntime[Any]) -> Sandbox:
-    """每次调用现建——不按会话缓存，那就是个无界字典（工具实例跨请求共享）。"""
-    return Sandbox(session_id(runtime))
+    """每次调用现建——不按会话缓存，那就是个无界字典（工具实例跨请求共享）。
+
+    布局与会话 id 都**从运行上下文取**（同一个口子）：工具因此不持有也不读任何全局，
+    换一套布局（不同的根或挂载表）只是换一次运行注入的东西。
+    """
+    return sandbox_layout(runtime).session(session_id(runtime))
 
 
 def _require_file(box: Sandbox, target: Path) -> Path:

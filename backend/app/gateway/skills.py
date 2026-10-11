@@ -112,7 +112,7 @@ def _remove(path: Path, view_root: Path) -> bool:
 
     守卫的理由很实在：这是**不可逆**操作，一个算错的前缀就会删掉 `/skills` 之外的东西。
     正常情况下这一关永远为真（路径来自 `iterdir()` 或校验过的技能名），留着是因为它代价极低
-    而后果极重——与 :func:`app.tools.sandbox._is_within` 同一个顾虑。
+    而后果极重——与 :func:`evaharness.sandbox.paths._is_within` 同一个顾虑。
     """
     if not path.exists() and not path.is_symlink():
         return True
@@ -139,7 +139,7 @@ def _is_link(path: Path) -> bool:
     """符号链接或 Windows junction。
 
     不跟随它们：junction 在 Windows 上**连管理员权限都不需要**就能建，而它是现成的逃逸手法
-    ——`:mod:`app.tools.sandbox` 在解析后还要再比一次包含性，正是同一个顾虑。
+    ——`:mod:`evaharness.sandbox.paths` 在解析后还要再比一次包含性，正是同一个顾虑。
     """
     if path.is_symlink():
         return True

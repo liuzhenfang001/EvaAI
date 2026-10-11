@@ -56,6 +56,7 @@ from evaharness.agents.lead_agent.custom_events import PRESENT_FILES_KIND
 from evaharness.agents.messages import final_text
 from evaharness.agents.options import RunOptions
 from evaharness.checkpoint import lead_thread_id
+from evaharness.sandbox.paths import SandboxLayout
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ async def run_lead_agent(
     thread_id: str | None = None,
     cancellation: RunCancellation | None = None,
     options: RunOptions | None = None,
+    sandbox: SandboxLayout | None = None,
 ) -> AsyncIterator[RunEvent]:
     """跑一轮主 Agent。
 
@@ -98,6 +100,8 @@ async def run_lead_agent(
         run_id: 本次运行的标识；缺省自生。
         thread_id: **会话**标识（不是 checkpoint 坐标，坐标由 :func:`lead_thread_id`
             派生）；缺省自生。给了就用——前端因此能先斩后奏地开一段新会话。
+        sandbox: 这次运行的沙箱布局（宿主根 + 挂载表）。要用到文件工具就必须给——
+            它是**部署策略**，由调用方决定，经运行上下文传给工具。不碰文件的运行可以不给。
         cancellation: 主动取消的接缝；缺省 no-op（见 :class:`RunCancellation`）。
 
     Yields:
@@ -128,7 +132,10 @@ async def run_lead_agent(
 
     queue: asyncio.Queue = asyncio.Queue()
     pump = asyncio.create_task(
-        _pump(_astream(agent, payload, session_id=thread_id, coordinate=coordinate, run_id=run_id), queue)
+        _pump(
+            _astream(agent, payload, session_id=thread_id, coordinate=coordinate, run_id=run_id, sandbox=sandbox),
+            queue,
+        )
     )
     if cancellation is not None:
         cancellation.register(pump)
@@ -210,12 +217,13 @@ def _astream(
     session_id: str,
     coordinate: str,
     run_id: str,
+    sandbox: SandboxLayout | None = None,
 ) -> AsyncIterator[tuple[str, Any]]:
     """统一多模式流式的载荷形状，便于 :func:`run_lead_agent` 保持扁平。"""
     return agent.astream(
         payload,
         config={"configurable": {"thread_id": coordinate}},
-        context=LeadContext(session_id=session_id, thread_id=coordinate, run_id=run_id),
+        context=LeadContext(session_id=session_id, thread_id=coordinate, run_id=run_id, sandbox=sandbox),
         stream_mode=["messages", "values", "custom"],
     )
 

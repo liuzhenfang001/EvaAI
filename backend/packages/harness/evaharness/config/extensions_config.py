@@ -96,6 +96,14 @@ class McpServerConfig(BaseModel):
     timeout: float = DEFAULT_TIMEOUT
     """读超时 / 握手超时，见 :data:`DEFAULT_TIMEOUT`。"""
 
+    enabled: bool = True
+    """这个 server 要不要启用。**缺省开**。
+
+    关掉它 = **根本不建连**：不是「连上再把工具藏起来」。这一点是它存在的理由——启用的 server 要付
+    启动开销（stdio 会 spawn 子进程，首次 `npx` 实测 30.9 秒），所以「这段配置先留着、但今天不
+    用它」必须是不花钱的。想彻底不留痕迹就把整段删掉；这个开关服务的是「留着、临时别连」。
+    """
+
     @model_validator(mode="before")
     @classmethod
     def _infer_transport(cls, data: Any) -> Any:

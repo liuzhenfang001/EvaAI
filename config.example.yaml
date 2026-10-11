@@ -57,17 +57,17 @@ tools:
 
   # 文件沙箱内的读写与检索
   - name: ls
-    use: app.tools.file_ops:ls
+    use: evaharness.sandbox.file_ops:ls
   - name: read_file
-    use: app.tools.file_ops:read_file
+    use: evaharness.sandbox.file_ops:read_file
   - name: write_file
-    use: app.tools.file_ops:write_file
+    use: evaharness.sandbox.file_ops:write_file
   - name: str_replace
-    use: app.tools.file_ops:str_replace
+    use: evaharness.sandbox.file_ops:str_replace
   - name: glob
-    use: app.tools.file_ops:glob
+    use: evaharness.sandbox.file_ops:glob
   - name: grep
-    use: app.tools.file_ops:grep
+    use: evaharness.sandbox.file_ops:grep
 
   # 把 /output 下的成品交给用户：前端会显示成可下载的文件卡片，并随 journal 落盘（刷新后
   # 卡片仍在）。只放行 /output——/workspace 是工作台，它的内容不会出现在用户面前。
@@ -95,7 +95,7 @@ tools:
   # 留存），容器名是 evaai-<会话 id>。
   #
   # - name: bash
-  #   use: app.tools.bash:make_bash
+  #   use: evaharness.sandbox.bash:make_bash
   #   # 也可以用 tag：enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0
   #   image: sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7
   #   network: bridge     # bridge（默认）= 容器能出网；none = 断网

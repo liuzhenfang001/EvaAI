@@ -22,15 +22,14 @@ from app.gateway.mcp import load_mcp_tools
 from app.gateway.routers import chat, files, threads
 from app.gateway.run_registry import RunRegistry
 from app.gateway.skills import project_skills
-from app.tools import docker_sandbox
-from app.tools.bash import BASH_TOOL_NAME
 from app.tools.registry import build_tools
-from app.tools.sandbox import skills_view_root
+from app.tools.sandbox_layout import build_layout
 from evaharness.checkpoint.sqlite_saver import make_sqlite_checkpointer, prune_checkpoints
 from evaharness.config.app_config import AppConfig, JournalConfig
 from evaharness.config.extensions_config import ExtensionsConfig
 from evaharness.config.loader import load_config, load_env_file, load_extensions
 from evaharness.journal.factory import make_journal_store
+from evaharness.sandbox import BASH_TOOL_NAME, docker, ensure_mount_check
 
 # backend/app/gateway/app.py -> 项目根（config.yaml / .env 所在目录）
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -84,7 +83,12 @@ async def lifespan(app: FastAPI):
     # 放在**启动期**、`build_tools` 之后：技能是可选内容，坏了只记警告不拦启动（决议 #5），所以它
     # 与「上面的配置写错就拒绝启动」是两种性格；放在这里是因为它确定、快，且不需要事件循环。
     # 源在仓库里（进版本控制），视图在 `.evaai/` 下（运行期数据）——两层分工见 ADR-0018。
-    skills = project_skills(_resolve_path("skills"), skills_view_root())
+    # 沙箱布局（T17）：宿主根是**部署策略**，从这里构造一次、挂到 state 再往下发。
+    # 工具侧不再有任何模块全局——它们从运行上下文拿到的就是这个对象（见 ADR-0020）。
+    sandbox_layout = build_layout()
+    app.state.sandbox_layout = sandbox_layout
+
+    skills = project_skills(_resolve_path("skills"), sandbox_layout.skills_view_root())
     app.state.skills = skills
 
     # AsyncSqliteSaver 需要活跃的事件循环，所以只能在这里构造；由 ExitStack 持有到关机。
@@ -105,7 +109,10 @@ async def lifespan(app: FastAPI):
         # 所以失败也只警告、不拦启动。挂到 state 是为了让 DELETE 会话那条路由知道要不要收尾。
         app.state.bash_enabled = any(tool.name == BASH_TOOL_NAME for tool in business_tools)
         if app.state.bash_enabled:
-            await _reconcile_sandboxes(app.state.journal_store)
+            # 哨兵文件在这里建，不在建工具那一刻：启动期校验（`check_docker_ready`）跑在注册表
+            # 里，那时还没有布局。见 `evaharness.sandbox.docker` 的模块说明。
+            ensure_mount_check(sandbox_layout)
+            await _reconcile_sandboxes(app.state.journal_store, sandbox_layout)
 
         # 建图的唯一入口。它只持有参数、不持有图：每个请求调 lead() 现建。
         # MCP：**连一次、把工具列表留下来**（之后就再不连了——运行期零 I/O，连接推迟到模型真的调
@@ -152,7 +159,7 @@ async def _prune_checkpoints(saver, retention_days: int) -> None:
         logger.info("已清理 %d 个过期 checkpoint thread", deleted)
 
 
-async def _reconcile_sandboxes(journal_store) -> None:
+async def _reconcile_sandboxes(journal_store, layout) -> None:
     """启动时清理孤儿沙箱容器（本部署建的、会话已不在 journal 里的那些）。
 
     「会话在不在」以 journal 为准，不看 ``.evaai/user/{会话}/`` 目录——ADR-0012 记着
@@ -163,7 +170,7 @@ async def _reconcile_sandboxes(journal_store) -> None:
     """
     try:
         live = {thread.thread_id for thread in await journal_store.threads()}
-        removed = await asyncio.to_thread(docker_sandbox.reconcile_orphans, live)
+        removed = await asyncio.to_thread(docker.reconcile_orphans, layout, live)
     except Exception:
         logger.warning("沙箱容器清理失败，跳过", exc_info=True)
         return

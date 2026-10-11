@@ -24,8 +24,9 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
-from app.tools.docker_sandbox import Completed, SandboxSpec, check_docker_ready, mask, run_command
-from evaharness.agents.middlewares.context import session_id
+from evaharness.agents.middlewares.context import sandbox_layout, session_id
+from evaharness.sandbox.docker import Completed, SandboxSpec, check_docker_ready, run_command
+from evaharness.sandbox.paths import SandboxLayout
 
 BASH_TOOL_NAME = "bash"
 
@@ -51,7 +52,7 @@ def make_bash(
     cpus: str = "2",
     pids_limit: int = 512,
 ) -> BaseTool:
-    """建出 ``bash`` 工具。**启动期**由 :func:`app.tools.registry.build_tools` 调用。
+    """建出 ``bash`` 工具。**启动期**由注册表（`build_tools`）调用。
 
     Args:
         image: 容器镜像。必须已经在本机（``docker pull`` 过），且带 ``bash``/``timeout``/``sleep``。
@@ -96,18 +97,19 @@ def make_bash(
                 quotes and redirections work as usual.
         """
         # 同步的 subprocess 丢进 worker 线程：不能阻塞事件循环（一条命令最长可以跑 timeout 秒）。
-        return await asyncio.to_thread(_execute, session_id(runtime), command, spec)
+        layout = sandbox_layout(runtime)
+        return await asyncio.to_thread(_execute, layout, session_id(runtime), command, spec)
 
     return bash
 
 
-def _execute(session: str, command: str, spec: SandboxSpec) -> str:
-    return render(run_command(session, command, spec), timeout=spec.timeout)
+def _execute(layout: SandboxLayout, session: str, command: str, spec: SandboxSpec) -> str:
+    return render(run_command(layout, session, command, spec), timeout=spec.timeout, layout=layout)
 
 
-def render(completed: Completed, *, timeout: int) -> str:
+def render(completed: Completed, *, timeout: int, layout: SandboxLayout) -> str:
     """把一次调用的结果渲染成模型看到的文本。"""
-    body = mask(completed.output.decode("utf-8", errors="replace")).rstrip()
+    body = layout.mask(completed.output.decode("utf-8", errors="replace")).rstrip()
 
     if completed.truncated:
         # 读满上限被我们杀掉：退出码是我们造成的，报它只会误导。

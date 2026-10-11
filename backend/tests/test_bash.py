@@ -5,29 +5,45 @@
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from tool_fakes import WORKSPACE_CONTEXT, fake_runtime
+from tool_fakes import fake_runtime, lead_context
 
-from app.tools import bash as bash_module
-from app.tools.bash import MAX_BASH_CHARS
-from app.tools.docker_sandbox import Completed
+from evaharness.sandbox import MAX_BASH_CHARS, Completed, SandboxLayout
+from evaharness.sandbox import bash as bash_module
+
+_PLAIN_LAYOUT = SandboxLayout(root=Path("C:/evaai-plain"))
+"""渲染用例的默认布局。
+
+那些用例断言的是**返回形状**（退出码、截断、超时提示），不关心掩码——掩码自己有专项测试，
+它会传一个真的 tmp_path 进来。所以这里给个不会命中任何正文的常量根就够。
+"""
 
 
 @pytest.fixture
-def tool(monkeypatch):
+def layout(tmp_path):
+    """这次运行的沙箱布局（根指向 tmp_path）——掩码与工具接线都要它。"""
+    return SandboxLayout(root=tmp_path)
+
+
+@pytest.fixture
+def tool(monkeypatch, layout):
     """建出工具，但把启动期校验换成空操作——校验自己另有测试。"""
     monkeypatch.setattr(bash_module, "check_docker_ready", lambda image: None)
     return bash_module.make_bash(image="img:1")
 
 
-def _render(*, returncode=0, output=b"", truncated=False, timeout=60):
-    return bash_module.render(Completed(returncode=returncode, output=output, truncated=truncated), timeout=timeout)
+def _render(*, returncode=0, output=b"", truncated=False, timeout=60, layout=_PLAIN_LAYOUT):
+    return bash_module.render(
+        Completed(returncode=returncode, output=output, truncated=truncated), timeout=timeout, layout=layout
+    )
 
 
-def _invoke(tool, command="echo hi"):
-    return asyncio.run(tool.ainvoke({"runtime": fake_runtime(WORKSPACE_CONTEXT), "command": command}))
+def _invoke(tool, command="echo hi", layout=_PLAIN_LAYOUT):
+    runtime = fake_runtime(lead_context(layout))
+    return asyncio.run(tool.ainvoke({"runtime": runtime, "command": command}))
 
 
 # --------------------------------------------------------------------------- #
@@ -47,14 +63,15 @@ def test_the_schema_only_exposes_the_command(tool):
 def test_the_command_runs_in_this_sessions_container(tool, monkeypatch):
     seen: dict = {}
 
-    def fake_run(session, command, spec):
-        seen.update(session=session, command=command, spec=spec)
+    def fake_run(layout, session, command, spec):
+        seen.update(layout=layout, session=session, command=command, spec=spec)
         return Completed(returncode=0, output=b"hello\n")
 
     monkeypatch.setattr(bash_module, "run_command", fake_run)
 
     assert _invoke(tool, "echo hello") == "hello"
-    assert seen["session"] == WORKSPACE_CONTEXT.session_id
+    assert seen["layout"].root == _PLAIN_LAYOUT.root
+    assert seen["session"] == "th-1"
     assert seen["command"] == "echo hello"
     assert seen["spec"].image == "img:1"
 
@@ -140,8 +157,8 @@ def test_invalid_utf8_does_not_raise():
 
 
 @pytest.mark.parametrize("form", ["{root}", "{slash}", "{lower}", "{extended}"])
-def test_host_paths_are_masked_in_every_spelling_docker_might_use(form, tmp_path, monkeypatch):
-    monkeypatch.setattr("app.tools.sandbox.SANDBOX_ROOT", tmp_path)
+def test_host_paths_are_masked_in_every_spelling_docker_might_use(form, tmp_path):
+    layout = SandboxLayout(root=tmp_path)
     root = str(tmp_path)
     variants = {
         "{root}": root,
@@ -150,7 +167,7 @@ def test_host_paths_are_masked_in_every_spelling_docker_might_use(form, tmp_path
         "{extended}": "\\\\?\\" + root,
     }
 
-    rendered = _render(output=f"docker said: {variants[form]}".encode())
+    rendered = _render(output=f"docker said: {variants[form]}".encode(), layout=layout)
 
     assert root not in rendered
     assert root.replace("\\", "/") not in rendered

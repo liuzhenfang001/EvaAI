@@ -8,6 +8,7 @@
 
 import itertools
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.gateway.agents import AgentFactory
 from app.gateway.app import lifespan
+from evaharness.sandbox import SandboxLayout
 
 GHOSTS = ("lead_agent", "subagent", "planner", "executor", "replanner", "model")
 """T9 之前挂在 ``app.state`` 上的东西。它们不该回来。"""
@@ -143,7 +145,7 @@ async def test_a_broken_tool_entry_refuses_to_start(monkeypatch):
 # docker 沙箱（T15）
 # --------------------------------------------------------------------------- #
 
-_BASH_TOOL = {"name": "bash", "use": "app.tools.bash:make_bash", "image": "img:1"}
+_BASH_TOOL = {"name": "bash", "use": "evaharness.sandbox.bash:make_bash", "image": "img:1"}
 
 
 class _Store:
@@ -156,7 +158,7 @@ class _Store:
         return self._sessions
 
 
-def _stub_lifespan(monkeypatch, *, tools=None, store=None) -> None:
+def _stub_lifespan(monkeypatch, tmp_path, *, tools=None, store=None) -> None:
     """把 lifespan 的外部依赖全换成假的（上面几条测试各自铺的那一套，这里抽出来复用）。"""
 
     @asynccontextmanager
@@ -169,6 +171,8 @@ def _stub_lifespan(monkeypatch, *, tools=None, store=None) -> None:
     def fake_model(_config, name=None, **_kwargs):  # noqa: ANN001, ANN003
         return ToolCapableFake(messages=itertools.cycle([AIMessage(content="好的。")]))
 
+    # 布局指向 tmp_path：启用了 bash 的用例会在 lifespan 里建哨兵文件，别写真的 backend/.evaai。
+    monkeypatch.setattr("app.gateway.app.build_layout", lambda: SandboxLayout(root=Path(tmp_path)))
     monkeypatch.setattr("app.gateway.app.load_env_file", lambda _path: None)
     monkeypatch.setattr("app.gateway.app.load_config", lambda _path: _config(tools=tools or _ONE_TOOL))
     monkeypatch.setattr("app.gateway.app.make_sqlite_checkpointer", fake_saver)
@@ -178,15 +182,15 @@ def _stub_lifespan(monkeypatch, *, tools=None, store=None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bash_that_cannot_start_refuses_to_boot(monkeypatch):
+async def test_bash_that_cannot_start_refuses_to_boot(monkeypatch, tmp_path):
     """启用了 bash 却用不了 = 坏部署：早说。拖到模型第一次调用才炸，离「你刚改的配置」就很远了。"""
-    from app.tools.docker_sandbox import DockerError
+    from evaharness.sandbox import DockerError
 
     def refuse(_image: str) -> None:
         raise DockerError("docker daemon 连不上，bash 工具没法用")
 
-    _stub_lifespan(monkeypatch, tools=[*_ONE_TOOL, _BASH_TOOL])
-    monkeypatch.setattr("app.tools.bash.check_docker_ready", refuse)
+    _stub_lifespan(monkeypatch, tmp_path, tools=[*_ONE_TOOL, _BASH_TOOL])
+    monkeypatch.setattr("evaharness.sandbox.bash.check_docker_ready", refuse)
 
     with pytest.raises(DockerError, match="daemon 连不上"):
         async with lifespan(SimpleNamespace(state=SimpleNamespace())):
@@ -194,17 +198,18 @@ async def test_bash_that_cannot_start_refuses_to_boot(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_bash_enabled_reconciles_orphan_containers_at_startup(monkeypatch):
+async def test_bash_enabled_reconciles_orphan_containers_at_startup(monkeypatch, tmp_path):
     """启动期把孤儿容器清掉——清理失败只警告，**不拦启动**（与 checkpoint 清理同口径）。"""
     seen: dict = {}
 
-    def fake_reconcile(live, **_kwargs):  # noqa: ANN001, ANN003
+    def fake_reconcile(layout, live, **_kwargs):  # noqa: ANN001, ANN003
+        seen["layout"] = layout
         seen["live"] = live
         return 2
 
-    _stub_lifespan(monkeypatch, tools=[*_ONE_TOOL, _BASH_TOOL], store=_Store("th-alive"))
-    monkeypatch.setattr("app.tools.bash.check_docker_ready", lambda image: None)
-    monkeypatch.setattr("app.gateway.app.docker_sandbox.reconcile_orphans", fake_reconcile)
+    _stub_lifespan(monkeypatch, tmp_path, tools=[*_ONE_TOOL, _BASH_TOOL], store=_Store("th-alive"))
+    monkeypatch.setattr("evaharness.sandbox.bash.check_docker_ready", lambda image: None)
+    monkeypatch.setattr("app.gateway.app.docker.reconcile_orphans", fake_reconcile)
 
     app = SimpleNamespace(state=SimpleNamespace())
     async with lifespan(app):
@@ -214,13 +219,13 @@ async def test_bash_enabled_reconciles_orphan_containers_at_startup(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_failing_cleanup_does_not_block_startup(monkeypatch):
-    def boom(live, **_kwargs):  # noqa: ANN001, ARG001
+async def test_a_failing_cleanup_does_not_block_startup(monkeypatch, tmp_path):
+    def boom(layout, live, **_kwargs):  # noqa: ANN001, ARG001
         raise RuntimeError("docker 不见了")
 
-    _stub_lifespan(monkeypatch, tools=[*_ONE_TOOL, _BASH_TOOL])
-    monkeypatch.setattr("app.tools.bash.check_docker_ready", lambda image: None)
-    monkeypatch.setattr("app.gateway.app.docker_sandbox.reconcile_orphans", boom)
+    _stub_lifespan(monkeypatch, tmp_path, tools=[*_ONE_TOOL, _BASH_TOOL])
+    monkeypatch.setattr("evaharness.sandbox.bash.check_docker_ready", lambda image: None)
+    monkeypatch.setattr("app.gateway.app.docker.reconcile_orphans", boom)
 
     app = SimpleNamespace(state=SimpleNamespace())
     async with lifespan(app):
@@ -228,14 +233,14 @@ async def test_a_failing_cleanup_does_not_block_startup(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_without_a_bash_entry_docker_is_never_touched(monkeypatch):
+async def test_without_a_bash_entry_docker_is_never_touched(monkeypatch, tmp_path):
     """没启用 bash 的部署（模板的默认状态）一个 docker 命令都不该发。"""
 
     def boom(*_args, **_kwargs):
         raise AssertionError("没启用 bash 却碰了 docker")
 
-    _stub_lifespan(monkeypatch)
-    monkeypatch.setattr("app.gateway.app.docker_sandbox.reconcile_orphans", boom)
+    _stub_lifespan(monkeypatch, tmp_path)
+    monkeypatch.setattr("app.gateway.app.docker.reconcile_orphans", boom)
 
     app = SimpleNamespace(state=SimpleNamespace())
     async with lifespan(app):

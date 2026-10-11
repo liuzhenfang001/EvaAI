@@ -8,16 +8,25 @@
 import subprocess
 
 import pytest
-from tool_fakes import COORDINATE_CONTEXT, WORKSPACE_CONTEXT, fake_runtime
+from tool_fakes import COORDINATE_CONTEXT, WORKSPACE_CONTEXT, fake_runtime, lead_context
 
-from app.tools.sandbox import MOUNTS, PathNotAllowedError, Sandbox
-from evaharness.agents.middlewares.context import session_id
+from evaharness.agents.middlewares.context import sandbox_layout, session_id
+from evaharness.sandbox import DEFAULT_MOUNTS, Mount, PathNotAllowedError, Sandbox, SandboxLayout
 
 
 @pytest.fixture
-def box(tmp_path) -> Sandbox:
-    """注入宿主根，绝不碰真的 ``backend/.evaai``。"""
-    return Sandbox("th-1", root=tmp_path)
+def layout(tmp_path) -> SandboxLayout:
+    """注入宿主根，绝不碰真的 ``backend/.evaai``。
+
+    T17 起根不再是模块全局——布局是**构造出来传进去**的，所以这个夹具只是「造一个指向
+    tmp_path 的布局」，不再需要 monkeypatch 任何东西。
+    """
+    return SandboxLayout(root=tmp_path)
+
+
+@pytest.fixture
+def box(layout) -> Sandbox:
+    return layout.session("th-1")
 
 
 # --------------------------------------------------------------------------- #
@@ -45,14 +54,13 @@ def test_each_mount_maps_under_its_own_host_dir(box, tmp_path, virtual, parts):
 
 def test_skills_is_global_while_the_others_are_per_session(tmp_path):
     """skills 是共享的，input/output/workspace 按会话分——这是「换会话不串文件」的全部依据。"""
-    assert Sandbox("th-1", root=tmp_path).resolve("/skills/a") == Sandbox("th-2", root=tmp_path).resolve("/skills/a")
-    assert Sandbox("th-1", root=tmp_path).resolve("/workspace/a") != Sandbox("th-2", root=tmp_path).resolve(
-        "/workspace/a"
-    )
+    layout = SandboxLayout(root=tmp_path)
+    assert layout.session("th-1").resolve("/skills/a") == layout.session("th-2").resolve("/skills/a")
+    assert layout.session("th-1").resolve("/workspace/a") != layout.session("th-2").resolve("/workspace/a")
 
 
 def test_every_mount_is_reachable(box):
-    assert {mount.virtual for mount in MOUNTS} == {"/input", "/output", "/workspace", "/skills"}
+    assert {mount.virtual for mount in DEFAULT_MOUNTS} == {"/input", "/output", "/workspace", "/skills"}
 
 
 # --------------------------------------------------------------------------- #
@@ -199,11 +207,11 @@ def test_contains_only_accepts_paths_under_a_mount(box, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_bad_session_id_is_rejected(tmp_path):
+def test_a_bad_session_id_is_rejected(layout):
     """会话 id 会当路径段用——``..`` 与 ``a/b`` 能直接毁掉挂载根。"""
     for bad in ("..", "a/b", "", "../../etc", "a b", "x" * 65):
         with pytest.raises(PathNotAllowedError):
-            Sandbox(bad, root=tmp_path)
+            layout.session(bad)
 
 
 def test_session_id_from_a_lead_context():
@@ -219,3 +227,58 @@ def test_session_id_without_a_context_fails_loudly():
     """取不到就抛：兜到某个默认目录会把不同会话的文件混在一起，而且不可逆。"""
     with pytest.raises(ValueError):
         session_id(fake_runtime(None))
+
+
+# --------------------------------------------------------------------------- #
+# 布局从运行上下文注入（T17）
+# --------------------------------------------------------------------------- #
+
+
+def test_the_layout_comes_from_the_run_context(layout):
+    """工具拿布局的唯一途径——与 `session_id` 同一个口子。"""
+    assert sandbox_layout(fake_runtime(lead_context(layout))) is layout
+
+
+def test_a_coordinate_shaped_context_also_carries_the_layout(layout):
+    """dict 形状（坐标）也认——T17 的访问器照 `session_id` 的写法认两种形状。"""
+    assert sandbox_layout(fake_runtime({**COORDINATE_CONTEXT, "sandbox": layout})) is layout
+
+
+def test_a_missing_layout_fails_loudly():
+    """取不到就抛：兜到某个猜出来的目录会把文件写到不该写的地方，而且不可逆。"""
+    with pytest.raises(ValueError, match="没有沙箱布局"):
+        sandbox_layout(fake_runtime(WORKSPACE_CONTEXT))
+
+
+# --------------------------------------------------------------------------- #
+# 自定义挂载表（harness 给默认，部署可覆盖）
+# --------------------------------------------------------------------------- #
+
+
+def test_a_custom_mount_table_drives_the_error_message(tmp_path):
+    """错误文案里的「只支持这些虚拟根」必须**从当前挂载表算**——写死的话自定义部署会自相矛盾。"""
+    layout = SandboxLayout(root=tmp_path, mounts=(Mount("/data", writable=False, parts=("data",)),))
+
+    with pytest.raises(PathNotAllowedError) as caught:
+        layout.session("th-1").resolve("/workspace/x")
+
+    # 文案里会带上被拒的那个路径（那是给模型看的），所以只断言「允许哪些」这一句。
+    assert "只支持：/data" in str(caught.value)
+
+
+def test_a_custom_mount_table_drives_the_default_landing_spot(tmp_path):
+    layout = SandboxLayout(
+        root=tmp_path,
+        mounts=(Mount("/data", writable=True, parts=("data",)),),
+        default_mount="/data",
+    )
+
+    assert layout.session("th-1").resolve("notes.md") == tmp_path / "data" / "notes.md"
+
+
+def test_skills_view_root_needs_a_skills_mount(tmp_path):
+    """没有 `/skills` 的部署问不出技能视图——**如实报错**，别猜一个目录出来。"""
+    layout = SandboxLayout(root=tmp_path, mounts=(Mount("/data", writable=True, parts=("data",)),))
+
+    with pytest.raises(PathNotAllowedError, match="/skills"):
+        layout.skills_view_root()

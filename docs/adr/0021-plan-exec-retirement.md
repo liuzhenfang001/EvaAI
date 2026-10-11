@@ -74,7 +74,7 @@ planner / executor / replanner / orchestrator / fanout 那套里再走一遍。�
 
 `middlewares/context.py` 的两个访问器同时认「带 `session_id` 的对象」与「只有 `thread_id` 的
 dict」。dict 那一支的**生产者**（执行单元的 `_astream`）随产线没了，但形状还在契约里：中间件的
-单测一直用裸 dict 驱动，而且 T17 要加的沙箱访问器也会照同样的写法认两种形状。测试里的
+单测一直用裸 dict 驱动，而且 T17 加的沙箱访问器（`sandbox_layout`，见 [ADR-0020](0020-sandbox-in-harness.md)）正是照同样的写法认两种形状。测试里的
 `PLAN_EXEC_CONTEXT` 因此改名 `COORDINATE_CONTEXT`——**名字指向的东西没了，形状还在**。
 
 ## 后果
@@ -93,7 +93,7 @@ dict」。dict 那一支的**生产者**（执行单元的 `_astream`）随产�
 | [ADR-0008](0008-run-journal-and-parallel-dispatch.md) | 「按批并行派发」那一半（plan 任务的 fanout）；**RunJournal 那一半照旧**，且更重要了 |
 | [ADR-0010](0010-lead-agent-as-default-path.md) | 「封存、路由保留」的处置：T16 改为删除。**「主 Agent 是默认路径」这条决策不变** |
 | [ADR-0013](0013-cancellation-resume-and-step-budget.md) | 已经自己对齐过（T5 随 T8/T9 重新对齐），无需再改 |
-| [ADR-0015 §3](0015-present-files-and-download.md) | 「`present_files` 只能放 app——它依赖 `app.tools.sandbox.Sandbox`，而 boundary 测试禁 harness import app」这句的理由：T17 会把沙箱搬进 harness，`present_files` 留在 app 的理由此后是**交付语义**，不是依赖方向 |
+| [ADR-0015 §3](0015-present-files-and-download.md) | 「`present_files` 只能放 app——它依赖 `app.tools.sandbox.Sandbox`，而 boundary 测试禁 harness import app」这句的理由：T17 已把沙箱搬进 harness，`present_files` 留在 app 的理由此后是**交付语义**，不是依赖方向 |
 
 ## 不做
 

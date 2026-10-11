@@ -10,12 +10,13 @@
 backend/
 ├── packages/harness/evaharness/   # 框架层（业务无关，可插拔机制）
 │   ├── agents/lead_agent/         # ★ 主 Agent：ReAct 图 + 事件流 + 子 agent 派发
+│   ├── sandbox/                   # 虚拟路径沙箱 + docker 沙箱 + 文件工具 + bash（ADR-0020）
 │   ├── checkpoint/                # checkpoint 持久化（SQLite）与保留策略
 │   ├── journal/                   # RunJournal + 可插拔 store（内存 / JSONL）
-│   └── agents/                    # ReAct 执行器装配 + 治理中间件
+│   └── agents/                    # 事件契约 + 治理中间件
 ├── app/                           # 业务层（助手人设、具体工具/技能）
 │   ├── gateway/                   # FastAPI + SSE + 每请求建图的 AgentFactory
-│   └── tools/                     # 工具注册表 + 文件沙箱 + 文件/联网工具
+│   └── tools/                     # 工具注册表 + 沙箱布局 + 交付/联网工具
 └── tests/                         # 测试（含 test_harness_boundary.py 强制单向依赖）
 frontend/                          # Next.js 前端（会话栏 + 聊天区 + 浮动任务面板）
 skills/                            # 技能源（启动期镜像到 /skills，见 skills/README.md）
@@ -115,6 +116,11 @@ tools:
 `transport` 可以不写——有 `command` 就是 `stdio`，有 `url` 就是 `http`（只支持这两种）。工具名一律是
 `mcp__<server>__<tool>`，所以**不会**和 `config.yaml` 里的业务工具撞名（那不是假想：官方 filesystem
 server 就有 `read_file` / `write_file`，正是我们的工具名）。
+
+**临时不用某个 server**：给它加 `"enabled": false`（缺省开）。关掉的 server **根本不建连**——
+不 spawn 子进程、不占启动时间（stdio 首次 `npx` 要下包，实测 30.9 秒）。配置留着，想用时改回 `true`
+重启即可；要彻底不留痕迹就把那段删掉。改完要**重启后端**（工具清单是启动期常量，见
+[ADR-0017](docs/adr/0017-mcp-connections.md) 补记二）。
 
 几条要记住的行为：
 
@@ -216,6 +222,7 @@ docker pull enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-
 - [x] **T14**（#15）skill 加载机制：仓库 `skills/` 源目录 → 启动期镜像到 `/skills` → 提示词只列清单（ADR-0018）
 - [x] **T15**（#16）docker 沙箱：每会话一个长驻容器 + `bash` 工具，四个挂载点原样 bind 进容器（容器内路径就是虚拟路径），`/input` 与 `/skills` 的只读改由 docker 强制（ADR-0019）
 - [x] **T16**（#17）Plan-Exec 下线：产线删除、事件契约搬到 `agents/events.py`、前端与 journal 契约保持以支持老数据回放（ADR-0021）
+- [x] **T17**（#18）沙箱与文件工具上移到 harness：`evaharness.sandbox` 拿机制、宿主根与挂载表经运行上下文注入（模块全局消失）（ADR-0020）
 
 **三期范围**（2026-10-08 起）见 [Issue #13](https://github.com/liuzhenfang001/EvaAI/issues/13)：~~docker 沙箱~~（T15）、~~skill 加载机制~~（T14）、~~MCP~~（T13）、Rag（+ llm wiki）。
 

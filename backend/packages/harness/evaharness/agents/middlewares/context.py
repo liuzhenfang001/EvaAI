@@ -23,9 +23,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langgraph.runtime import Runtime
+
+if TYPE_CHECKING:
+    # **只在类型检查时导入**，运行期不要：`SandboxLayout` 住的那个包（`evaharness.sandbox`）
+    # 会在自己的 `__init__` 里拉进 bash / file_ops 工具，而它们反过来要 import 本模块取
+    # `sandbox_layout`——运行期导入就成环。访问器本身只需要把 context 里那个值原样取出来，
+    # 不碰这个类，所以把导入关进 TYPE_CHECKING 就能断开（标注反正已经是字符串了）。
+    from evaharness.sandbox.paths import SandboxLayout
 
 FALLBACK_BUCKET = "default"
 """取不到坐标时的兜底桶。
@@ -83,4 +90,27 @@ def session_id(runtime: Runtime | Any) -> str:
     return str(value)
 
 
-__all__ = ["FALLBACK_BUCKET", "SAFE_SESSION_ID", "session_id", "thread_bucket"]
+def sandbox_layout(runtime: Runtime | Any) -> SandboxLayout:
+    """取这一轮的**沙箱布局**（宿主根 + 挂载表 + 相对路径的落点）。
+
+    与 :func:`session_id` 并排、同样的两种形状：对象读 ``sandbox`` 字段，dict 读 ``sandbox`` 键。
+
+    **为什么走上下文而不是全局**：宿主根与挂载表是**部署策略**（本地开发一个根、测试一个
+    tmp_path、将来接真沙箱可能是另一套挂载表）。放模块全局就等于框架替部署决定了这件事，
+    而且测试只能靠 monkeypatch 那个全局——参照项目正是这么做的（进程级 provider 单例），
+    本项目按 ADR-0012 §2 的立场拒绝那条路。
+
+    **取不到就抛**（与 :func:`session_id` 同口径）：工具拿不到布局就没法把虚拟路径翻成宿主
+    路径，兜底只会把文件写进某个猜出来的目录——而那是不可逆的。
+    """
+    context = getattr(runtime, "context", None)
+    if context is None:
+        raise ValueError("运行上下文缺失，无法确定沙箱布局")
+
+    value = context.get("sandbox") if isinstance(context, Mapping) else getattr(context, "sandbox", None)
+    if value is None:
+        raise ValueError(f"运行上下文里没有沙箱布局（拿到 {context!r}）")
+    return value
+
+
+__all__ = ["FALLBACK_BUCKET", "SAFE_SESSION_ID", "sandbox_layout", "session_id", "thread_bucket"]

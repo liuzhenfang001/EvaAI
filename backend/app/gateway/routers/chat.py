@@ -14,7 +14,7 @@ T13 一度把建图挪进了一个「一次运行」的异步生成器——那�
 整轮跑完）。T13 之后 MCP 改成了**启动期装载、调用时才连**（见 `app.gateway.mcp`），运行期没有
 任何 MCP 资源要持有，那一层生成器就失去理由了，于是还原。
 
-请求**参数**的校验（`thread_id` 非法 → 400）与 `ensure_session_dirs` 在更前面，理由不变：
+请求**参数**的校验（`thread_id` 非法 → 400）与会话文件空间的准备在更前面，理由不变：
 那些该在流开始之前就给出 HTTP 状态码。
 
 **上游生成器仍然关得干净**：`sse_consumer` 用 `aclosing` 关 `journaled`、`journaled` 用 `aclosing`
@@ -32,7 +32,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.gateway.sse import sse_consumer
-from app.tools.sandbox import ensure_session_dirs
 from evaharness.agents.events import RunEvent
 from evaharness.agents.lead_agent import RunCancellation, run_lead_agent
 from evaharness.agents.options import RunOptions, ThinkingLevel
@@ -83,7 +82,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     thread_id = _resolve_thread_id(body)
     # 会话一诞生就有它的文件空间：用户能在对话前把文件放进 /input，而「有没有文件空间」
     # 不取决于模型想没想起来调工具。必须在建图与开跑之前。
-    ensure_session_dirs(thread_id)
+    state.sandbox_layout.ensure_session_dirs(thread_id)
     run_id = uuid4().hex[:12]
     # 这一轮的运行参数：建图（模型）与 runner（事件回显）**必须拿同一份**——模型按 A 档跑、
     # 事件却报 B 档的话，回放与实时就分家了。
@@ -97,6 +96,8 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             thread_id=thread_id,
             cancellation=_make_cancellation(state, run_id),
             options=options,
+            # 布局随这次运行下发：工具侧从运行上下文取（见 ADR-0020），不读任何全局。
+            sandbox=state.sandbox_layout,
         ),
         thread_id,
     )

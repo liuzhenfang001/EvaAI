@@ -1,26 +1,25 @@
 """契约测试：六个文件工具。
 
-全部在 ``tmp_path`` 上跑——**绝不碰真的 ``backend/.evaai``**。夹具把
-``app.tools.sandbox.SANDBOX_ROOT`` 换掉，这同时验证了「根目录是调用时读的」：如果哪天有人
-把它写成默认参数值，这些测试会一起变红（import 时求值就再也 monkeypatch 不动了）。
+全部在 ``tmp_path`` 上跑——**绝不碰真的 ``backend/.evaai``**。沙箱根不再有模块全局可以
+monkeypatch（T17 起它是**注入**的）：夹具造一个指向 ``tmp_path`` 的布局塞进运行上下文，
+工具从那儿取。所以「根不会被写死」这件事现在由类型系统与调用约定保证，而不是靠一条测试提醒。
 """
 
 import pytest
-from tool_fakes import COORDINATE_CONTEXT, WORKSPACE_CONTEXT, fake_runtime
+from tool_fakes import COORDINATE_CONTEXT, fake_runtime, lead_context
 
-from app.tools import file_ops
-from app.tools.sandbox import PathNotAllowedError
-
-
-@pytest.fixture(autouse=True)
-def _sandbox_root(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.tools.sandbox.SANDBOX_ROOT", tmp_path)
-    return tmp_path
+from evaharness.sandbox import PathNotAllowedError, SandboxLayout, file_ops
 
 
 @pytest.fixture
-def rt():
-    return fake_runtime(WORKSPACE_CONTEXT)
+def layout(tmp_path):
+    """这次运行的沙箱布局——根指向 tmp_path。"""
+    return SandboxLayout(root=tmp_path)
+
+
+@pytest.fixture
+def rt(layout):
+    return fake_runtime(lead_context(layout))
 
 
 def _run(tool, rt, **kwargs):  # noqa: ANN001, ANN202
@@ -32,17 +31,17 @@ def _run(tool, rt, **kwargs):  # noqa: ANN001, ANN202
 # --------------------------------------------------------------------------- #
 
 
-def test_write_then_read_round_trips(_sandbox_root, rt):
+def test_write_then_read_round_trips(layout, rt):
     assert _run(file_ops.write_file, rt, path="notes/todo.md", content="第一行\n第二行").startswith("OK")
 
-    assert (_sandbox_root / "user" / "th-1" / "workspace" / "notes" / "todo.md").is_file()
+    assert (layout.root / "user" / "th-1" / "workspace" / "notes" / "todo.md").is_file()
     out = _run(file_ops.read_file, rt, path="/workspace/notes/todo.md")
     assert "第一行" in out and "第二行" in out
 
 
-def test_write_creates_missing_parents(_sandbox_root, rt):
+def test_write_creates_missing_parents(layout, rt):
     _run(file_ops.write_file, rt, path="a/b/c/d.txt", content="x")
-    assert (_sandbox_root / "user" / "th-1" / "workspace" / "a" / "b" / "c" / "d.txt").is_file()
+    assert (layout.root / "user" / "th-1" / "workspace" / "a" / "b" / "c" / "d.txt").is_file()
 
 
 def test_a_single_write_over_the_limit_is_refused_with_a_way_out(rt):
@@ -145,7 +144,7 @@ def test_ls_renders_a_two_level_tree(rt):
     assert "notes/" in out and "a.md" in out and "top.txt" in out
 
 
-def test_a_fresh_session_already_has_its_directories(_sandbox_root, rt):
+def test_a_fresh_session_already_has_its_directories(layout, rt):
     """**新会话的目录必须已经建好。**
 
     不建的话第一次 `ls` 得到的是「不存在」，模型据此会判定工作台不可用——而它只是空的。
@@ -156,7 +155,7 @@ def test_a_fresh_session_already_has_its_directories(_sandbox_root, rt):
     assert _run(file_ops.ls, rt, path="/output") == "/output is empty."
 
     for name in ("input", "output", "workspace"):
-        assert (_sandbox_root / "user" / "th-1" / name).is_dir()
+        assert (layout.root / "user" / "th-1" / name).is_dir()
 
 
 def test_a_missing_subdirectory_still_says_it_does_not_exist(rt):
@@ -164,14 +163,14 @@ def test_a_missing_subdirectory_still_says_it_does_not_exist(rt):
     assert "does not exist" in _run(file_ops.ls, rt, path="/workspace/nope")
 
 
-def test_skills_is_not_created_for_a_session(_sandbox_root, rt):
+def test_skills_is_not_created_for_a_session(layout, rt):
     """`/skills` 是全局的，不随会话建，也还没有生产者——如实说「不存在」比造个空目录好。"""
     _run(file_ops.ls, rt, path="/workspace")
-    assert not (_sandbox_root / "skills-view").exists()
+    assert not (layout.root / "skills-view").exists()
 
 
-def test_ls_on_an_empty_directory(_sandbox_root, rt):
-    (_sandbox_root / "user" / "th-1" / "output").mkdir(parents=True)
+def test_ls_on_an_empty_directory(layout, rt):
+    (layout.root / "user" / "th-1" / "output").mkdir(parents=True)
     assert "empty" in _run(file_ops.ls, rt, path="/output")
 
 
@@ -230,15 +229,15 @@ def test_writes_into_read_only_mounts_are_refused(rt, tool_name, path):
         _run(tool, rt, path=path, content="x", old_str="a", new_str="b")
 
 
-def test_reads_from_input_are_allowed(_sandbox_root, rt):
-    uploaded = _sandbox_root / "user" / "th-1" / "input" / "up.txt"
+def test_reads_from_input_are_allowed(layout, rt):
+    uploaded = layout.root / "user" / "th-1" / "input" / "up.txt"
     uploaded.parent.mkdir(parents=True, exist_ok=True)
     uploaded.write_text("from the user", encoding="utf-8")
 
     assert "from the user" in _run(file_ops.read_file, rt, path="/input/up.txt")
 
 
-def test_no_tool_output_leaks_the_host_root(_sandbox_root, rt):
+def test_no_tool_output_leaks_the_host_root(layout, rt):
     _run(file_ops.write_file, rt, path="a/b.txt", content="x")
 
     outputs = [
@@ -247,7 +246,7 @@ def test_no_tool_output_leaks_the_host_root(_sandbox_root, rt):
         _run(file_ops.grep, rt, pattern="x"),
         _run(file_ops.read_file, rt, path="a/b.txt"),
     ]
-    assert not any(str(_sandbox_root) in out for out in outputs), outputs
+    assert not any(str(layout.root) in out for out in outputs), outputs
 
 
 def test_a_traversal_attempt_is_refused_through_the_tool(rt):
@@ -260,12 +259,13 @@ def test_a_traversal_attempt_is_refused_through_the_tool(rt):
 # --------------------------------------------------------------------------- #
 
 
-def test_tools_use_the_session_from_a_lead_context(_sandbox_root):
-    _run(file_ops.write_file, fake_runtime(WORKSPACE_CONTEXT), path="x.txt", content="1")
-    assert (_sandbox_root / "user" / "th-1" / "workspace" / "x.txt").is_file()
+def test_tools_use_the_session_from_a_lead_context(layout, rt):
+    """对象形状的上下文（主图与子图用的就是这个）——布局也在同一个口子里取。"""
+    _run(file_ops.write_file, rt, path="x.txt", content="1")
+    assert (layout.root / "user" / "th-1" / "workspace" / "x.txt").is_file()
 
 
-def test_tools_use_the_session_from_a_coordinate_context(_sandbox_root):
+def test_tools_use_the_session_from_a_coordinate_context(layout):
     """坐标形状的上下文只给 ``{会话}:{运行}:{任务}``——取第一段，两个会话的文件不会混。"""
-    _run(file_ops.write_file, fake_runtime(COORDINATE_CONTEXT), path="x.txt", content="1")
-    assert (_sandbox_root / "user" / "th-1" / "workspace" / "x.txt").is_file()
+    _run(file_ops.write_file, fake_runtime({**COORDINATE_CONTEXT, "sandbox": layout}), path="x.txt", content="1")
+    assert (layout.root / "user" / "th-1" / "workspace" / "x.txt").is_file()

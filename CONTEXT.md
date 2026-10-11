@@ -7,11 +7,15 @@
 ### 架构分层
 
 **harness（框架层）**：
-EvaAI 中业务无关、只提供可插拔机制的那一层。
+EvaAI 中业务无关、只提供可插拔机制的那一层。分界的一句话是：**机制在 harness，策略在 app**。
+沙箱、文件工具、容器、事件契约、技能解析、MCP 装配都在这一层；而「装哪些工具、宿主根在哪儿、
+挂载表长什么样、人设是什么」在 app。
 _Avoid_: framework, 核心库, core, 基础设施
 
 **app（业务层）**：
-EvaAI 中装填具体实例（人设、工具、技能）的那一层。
+EvaAI 中装填具体实例（人设、工具、技能）的那一层。**工具的注册表（`config.yaml` 的 `tools:`）
+在这一层**——装哪些工具、叫什么名字、开放哪些参数是业务决定（ADR-0012）；但工具的**实现**
+从 T17 起在 harness（ADR-0020），两者别混。
 _Avoid_: application, 业务代码, server
 
 ### 执行模型
@@ -94,6 +98,7 @@ _Avoid_: tool loader, 插件系统, 工具工厂
 模型看到的目录名（`/workspace`、`/output`、`/input`、`/skills`）与它们对应的宿主目录之间的
 映射。**宿主绝对路径永远不进模型上下文**（泄漏 + 不可移植）。这四个挂载点曾经是「将来换真沙箱」
 的唯一缝——T15 换了（见「沙箱容器」），而缝的形状没变：**同一个虚拟路径在两边都是同一个路径**。
+这张表本身（名字 + 读写权限）由**沙箱布局**带着走，框架给默认四条、部署可覆盖。
 _Avoid_: 沙箱路径, root path, 别名目录
 
 **沙箱容器（sandbox container）**：
@@ -103,7 +108,17 @@ _Avoid_: 沙箱路径, root path, 别名目录
 **同一个文件**，不是「两套坐标系靠约定对齐」；`/input` 与 `/skills` 的只读在这里由 docker 强制。
 四个目录**之外**的东西（装的包、`/tmp`、后台进程）文件工具看不见、容器重建就没——所以「要留下的
 写 `/workspace` 或 `/output`」是模型必须知道的一条。
+它挂在哪个宿主根、用哪张挂载表，由**沙箱布局**决定。
 _Avoid_: 沙箱（在本项目里那指虚拟路径那一层机制）、docker 环境, 执行环境, 沙箱会话
+
+**沙箱布局（sandbox layout）**：
+一次运行注入的「**宿主根 + 挂载表 + 相对路径的落点**」，类型是 `SandboxLayout`。它取代了
+T17 之前的模块全局 `SANDBOX_ROOT`：宿主根与挂载表是**部署策略**，由 app 构造一次、经
+**运行上下文**（`LeadContext` 的 `sandbox` 字段）下发给工具——与 `session_id` 同一个口子。
+所以框架里没有任何全局决定「文件落在磁盘的哪里」，而测试换根的方式是「造一个指向 `tmp_path`
+的布局」，不是 monkeypatch 全局。**取不到就抛**（与 `session_id` 同口径）：兜到某个猜出来的
+目录会把文件写到不该写的地方，而且不可逆。
+_Avoid_: 沙箱配置（那是给人看的旋钮，这是运行期注入的对象）、根路径、SANDBOX_ROOT（旧的全局名）
 
 **工作台（workspace）**：
 会话级的工作目录，相对路径的落点，草稿与中间产物放这里。与「交付」（`/output`）和「用户上传」
@@ -153,8 +168,8 @@ _Avoid_: 技能列表、技能索引（那是参照项目的 `skill_index`，指
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T16**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15、T15 是 #16、T16 是 #17），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)，T15（docker 沙箱）见 [Issue #16](https://github.com/liuzhenfang001/EvaAI/issues/16)，T16（Plan-Exec 下线）见 [Issue #17](https://github.com/liuzhenfang001/EvaAI/issues/17)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
+**T1–T17**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15、T15 是 #16、T16 是 #17、T17 是 #18），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)，T15（docker 沙箱）见 [Issue #16](https://github.com/liuzhenfang001/EvaAI/issues/16)，T16（Plan-Exec 下线）见 [Issue #17](https://github.com/liuzhenfang001/EvaAI/issues/17)，T17（沙箱上移 harness）见 [Issue #18](https://github.com/liuzhenfang001/EvaAI/issues/18)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测

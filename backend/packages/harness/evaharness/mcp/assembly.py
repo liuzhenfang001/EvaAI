@@ -50,6 +50,19 @@ PROBE_TIMEOUT = 60.0
 """
 
 
+def _active_servers(servers: Mapping[str, McpServerConfig]) -> dict[str, McpServerConfig]:
+    """挑出**要连**的 server，并说出跳过了哪些。
+
+    `enabled: false` 的在这里就被摘掉——它**根本不进连接那一段**，所以既不 spawn 子进程、
+    也不占启动时间。两个入口（启动期装载 / 一次运行的 context）都走这一关，免得「换一条路
+    就连上了禁用的 server」。
+    """
+    skipped = [name for name, server in servers.items() if not server.enabled]
+    if skipped:
+        logger.info("MCP server 已禁用（extensions_config.json 里 enabled=false），跳过：%s", "、".join(skipped))
+    return {name: server for name, server in servers.items() if server.enabled}
+
+
 @asynccontextmanager
 async def open_mcp_tools(
     servers: Mapping[str, McpServerConfig],
@@ -63,7 +76,7 @@ async def open_mcp_tools(
     """
     async with AsyncExitStack() as stack:
         collected: list[BaseTool] = []
-        for name, server in servers.items():
+        for name, server in _active_servers(servers).items():
             try:
                 adapter = adapter_factory(server)
                 await stack.enter_async_context(adapter)  # type: ignore[arg-type]
@@ -104,7 +117,7 @@ async def load_mcp_tools(
     `asyncio.timeout`，一个不响应的拖不住启动。
     """
     collected: list[BaseTool] = []
-    for name, server in servers.items():
+    for name, server in _active_servers(servers).items():
         try:
             async with asyncio.timeout(timeout):
                 adapter = adapter_factory(server)

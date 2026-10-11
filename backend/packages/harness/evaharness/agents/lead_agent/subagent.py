@@ -62,7 +62,13 @@ def make_task_tool(subagent: CompiledStateGraph) -> Any:
             subagent,
             {"messages": [HumanMessage(content=prompt)]},
             coordinate=coordinate,
-            context=LeadContext(session_id=context.session_id, thread_id=coordinate, run_id=context.run_id),
+            context=LeadContext(
+                session_id=context.session_id,
+                thread_id=coordinate,
+                run_id=context.run_id,
+                # 布局是部署级的，原样继承——子 agent 与主 Agent 看的是**同一份文件**。
+                sandbox=context.sandbox,
+            ),
         )
         return final_text(state) or NO_OUTPUT_PLACEHOLDER
 
