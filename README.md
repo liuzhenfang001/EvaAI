@@ -11,6 +11,8 @@ backend/
 ├── packages/harness/evaharness/   # 框架层（业务无关，可插拔机制）
 │   ├── agents/lead_agent/         # ★ 主 Agent：ReAct 图 + 事件流 + 子 agent 派发
 │   ├── sandbox/                   # 虚拟路径沙箱 + docker 沙箱 + 文件工具 + bash（ADR-0020）
+│   ├── knowledge/                 # RAG 知识库机制：切分 / sqlite-vec 存储 / 索引器 / 检索工具（ADR-0022）
+│   ├── fingerprint/               # 目录指纹与变更检测（只回答「变了没、变哪些」）
 │   ├── checkpoint/                # checkpoint 持久化（SQLite）与保留策略
 │   ├── journal/                   # RunJournal + 可插拔 store（内存 / JSONL）
 │   └── agents/                    # 事件契约 + 治理中间件
@@ -20,11 +22,12 @@ backend/
 └── tests/                         # 测试（含 test_harness_boundary.py 强制单向依赖）
 frontend/                          # Next.js 前端（会话栏 + 聊天区 + 浮动任务面板）
 skills/                            # 技能源（启动期镜像到 /skills，见 skills/README.md）
+knowledge/                         # 知识库源（启动期镜像到 /knowledge 并建向量索引，见知识库一节）
 config.yaml / config.example.yaml  # 主配置（版本化，$ENV 引用）
 extensions_config.json             # 扩展（MCP / skills / middlewares），模板同上
 .env                               # 密钥
-data/                              # 运行时数据（SQLite checkpoint + data/journal/<会话>/，已 gitignore）
-backend/.evaai/                    # 文件沙箱的运行期数据（input/output/workspace/skills-view，已 gitignore）
+data/                              # 运行时数据（SQLite checkpoint + 向量库 + 指纹 + data/journal/<会话>/，已 gitignore）
+backend/.evaai/                    # 文件沙箱的运行期数据（input/output/workspace/skills-view/knowledge-view，已 gitignore）
 ```
 
 ## 环境要求
@@ -44,7 +47,7 @@ uv sync
 
 # 2. 准备配置
 cp ../config.example.yaml ../config.yaml
-cp ../.env.example ../.env        # 填入 DEEPSEEK_API_KEY
+cp ../.env.example ../.env        # 填入 DEEPSEEK_API_KEY（要用知识库再填 DASHSCOPE_API_KEY）
 cp ../extensions_config.example.json ../extensions_config.json
 
 # 3. 跑测试
@@ -63,6 +66,10 @@ cd ../frontend && npm install && npm run dev
 
 ## 开发约定
 
+- **日志**：`config.yaml` 的 `log_level` 管我们自己的两个命名空间（`app.*` / `evaharness.*`），
+  启动期消费（[ADR-0023](docs/adr/0023-log-level-consumption.md)）。uvicorn 自己的日志另有其
+  `--log-level`；两者互不覆盖。第三方（httpx / chromadb）的日志**不受我们管辖**——不这么切的话
+  httpx 每个请求一条 INFO 会把真正想看的几条淹掉。
 - **TDD**：harness 层强制红-绿-重构（先写契约测试，再实现）。
 - **单向依赖**：`app` 可 import `evaharness`，反向禁止（由 `tests/test_harness_boundary.py` 卡死）。见 [ADR-0001](docs/adr/0001-harness-app-one-way-dependency.md)。
 - **可插拔点**：统一用 `evaharness.reflection` 的 `resolve_class`（类）/ `resolve_variable`（实例，如工具），配置里写 `"module.path:attr"`，零 DI 容器。
@@ -173,27 +180,52 @@ docker pull enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-
 然后把模板里 bash 那一段的注释去掉（镜像、网络、超时、内存、CPU、进程数都是它的旋钮）。
 见 [ADR-0019](docs/adr/0019-docker-sandbox.md)。
 
-**它是怎么和文件工具对上号的**：容器里那四个目录**就是**虚拟路径本身（`/workspace`、`/output`、
-`/input`、`/skills`），宿主目录经 bind mount 映射进去。所以容器里 `echo hi > /workspace/a.txt`，
+**它是怎么和文件工具对上号的**：容器里那些目录**就是**虚拟路径本身（`/workspace`、`/output`、
+`/input`、`/skills`、`/knowledge`），宿主目录经 bind mount 映射进去。所以容器里 `echo hi > /workspace/a.txt`，
 文件工具 `read_file /workspace/a.txt` 立刻读得到——**是同一个文件**，不是两套坐标系靠约定对齐。
-`/input` 与 `/skills` 的只读到这里由 **docker 强制**（容器里 `touch /input/x` 会真的失败）。
+`/input`、`/skills`、`/knowledge` 的只读到这里由 **docker 强制**（容器里 `touch /input/x` 会真的失败）。
 
 几条要记住的行为：
 
 - **每会话一个长驻容器**，名字 `evaai-<会话 id>`；装过的包在会话里留存。`DELETE /threads/{id}`
   会连带删掉它，后端启动时也会清掉「会话已不在 journal 里」的孤儿容器。
-- **容器内那四个目录之外的东西会丢**（`/tmp`、装的包、后台进程）：文件工具看不见，容器重建就没了。
+- **容器内那些挂载目录之外的东西会丢**（`/tmp`、装的包、后台进程）：文件工具看不见，容器重建就没了。
   要留下的东西写 `/workspace` 或 `/output`。
 - **每次 `bash` 调用是全新 shell**：`cd`、`export` 不跨调用。
 - **命令的非零退出码是正常返回**（形如 `[exit code 1]`），只有 docker 这一层失败才是工具错误。
 - 启用了 bash 而 docker / 镜像不可用 → **服务拒绝启动**，并在日志里给出可执行的提示。
+
+## 知识库（T18）
+
+给模型一个可检索的本地**知识库**。源是仓库根的 `knowledge/`（把文档放进去即可，`.md` / `.txt`），
+启动期切分、嵌入、存进本地 ChromaDB，模型用 `knowledge_search` 工具按需取用。
+
+**默认关闭**——`config.example.yaml` 里 `knowledge` 那一段是注释掉的，要用得先有嵌入 key
+（`.env` 里填 `DASHSCOPE_API_KEY`，走通义 `text-embedding-v4` 的 OpenAI 兼容端点），再把 `enabled`
+打开。缺 key 却 `enabled: true` 会**拒绝启动**（那是显式配置错，不是「功能没开」）。
+
+它的形状，几句话说清（细节见 [ADR-0022](docs/adr/0022-knowledge-base-rag.md)）：
+
+- **源目录即真相**：改 `knowledge/` 里的文件后**重启**，启动期比对**按文件**的指纹，只对**改动过的
+  文件**重切、重嵌、替换（删除也在差异里，移走的文件随之清出）。没变就跳过。**增量重建**让
+  「改一个文件」的代价是重嵌那一个文件，而不是整库重来。
+- **换嵌入模型会整库重建**：模型 / 端点 / 维度 / 切分参数构成「索引配方」，记在向量库里；启动时
+  一比对，不一致就丢弃旧向量全部重算——因为源一个字没改，向量也已经作废了（不重建的后果是检索
+  **静默变差**，或者维度对不上直接报错）。改了切分逻辑同理，靠 `SPLITTER_RECIPE` 版本号触发。
+- **重建在后台跑，不拖慢启动**：lifespan 只做建库、建工具、起一个后台任务就放行。重启后第一条检索
+  会**等**索引就绪；构建失败则那次检索**可见地报错**，不静默返回空。
+- **命中不塞回上下文**：`knowledge_search` 把匹配片段写进 `/workspace/retrieved/<query 哈希>/chunk_i.md`，
+  **只回路径**，模型自己 `read_file` 去读——上下文预算按需。
+- **`/knowledge` 是第五个只读挂载**：启动期从仓库 `knowledge/` 镜像过来（照 `/skills` 的做法），
+  所以模型命中一个片段后还能 `read_file /knowledge/xx.md` 读原件全文。它随 bash 容器一起只读挂载。
+- **中文友好**：切分显式带中文句末标点（`。！？；，、`），不靠默认的英文分隔符硬切。
 
 ## 四维度验收（T6）
 
 「可运行 / 可测试 / 可观测 / 可扩展」四条收口，各自这样验：
 
 - **可运行**：新机器按上方「快速开始」从零走一遍——`uv sync` → 复制 `config.example.yaml` / `.env.example` / `extensions_config.example.json` → `uv run pytest` → uvicorn → `npm install && npm run dev`。除了这三份模板，没有其它需要手动准备的东西。
-- **可测试**：`uv run pytest` 内置覆盖率门槛（`--cov=evaharness --cov-fail-under=80`）——harness 层（框架层）覆盖率低于 80% 会直接红；当前 95%。要看缺哪几行，单跑 `uv run pytest --cov-report=term-missing`。
+- **可测试**：`uv run pytest` 内置覆盖率门槛（`--cov=evaharness --cov-fail-under=80`）——harness 层（框架层）覆盖率低于 80% 会直接红；当前 94%。要看缺哪几行，单跑 `uv run pytest --cov-report=term-missing`。
 - **可观测**：每次运行（`/chat/stream`）都经 `journaled` 把 `run_start → … → run_end` 的完整事件序列落进 RunJournal（`data/journal/<会话>/`），刷新/重启后按会话回放。
 - **可扩展**：加一个工具 = 写一个 `@tool`（或工厂）+ 在 `config.yaml` 的 `tools:` 加一项，不改任何框架代码——见上方「工具集」。
 
@@ -223,6 +255,7 @@ docker pull enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-
 - [x] **T15**（#16）docker 沙箱：每会话一个长驻容器 + `bash` 工具，四个挂载点原样 bind 进容器（容器内路径就是虚拟路径），`/input` 与 `/skills` 的只读改由 docker 强制（ADR-0019）
 - [x] **T16**（#17）Plan-Exec 下线：产线删除、事件契约搬到 `agents/events.py`、前端与 journal 契约保持以支持老数据回放（ADR-0021）
 - [x] **T17**（#18）沙箱与文件工具上移到 harness：`evaharness.sandbox` 拿机制、宿主根与挂载表经运行上下文注入（模块全局消失）（ADR-0020）
+- [x] **T18**（#19）RAG 知识库（纯文本端到端）：目录指纹 + 按文件增量重建 + `sqlite-vec` 纯向量检索；命中落 `/workspace` 只回路径；新增只读挂载 `/knowledge`（ADR-0022）
 
 **三期范围**（2026-10-08 起）见 [Issue #13](https://github.com/liuzhenfang001/EvaAI/issues/13)：~~docker 沙箱~~（T15）、~~skill 加载机制~~（T14）、~~MCP~~（T13）、Rag（+ llm wiki）。
 

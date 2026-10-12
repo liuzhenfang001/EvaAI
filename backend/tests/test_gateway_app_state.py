@@ -57,6 +57,16 @@ def _skills(monkeypatch):
     monkeypatch.setattr("app.gateway.app.project_skills", lambda _src, _view: [])
 
 
+@pytest.fixture(autouse=True)
+def _logging(monkeypatch):
+    """日志配置换成空实现——真配置改的是**全局** logger（级别 / handler / propagate）。
+
+    ``propagate=False`` 会切断「向上冒泡到 root」，而 ``caplog`` 正是挂在 root 上收日志的——
+    跑过 lifespan 的测试若不隔开，会让别的测试文件的 caplog 断言按执行顺序时对时错。
+    """
+    monkeypatch.setattr("app.gateway.app.configure_logging", lambda _level: None)
+
+
 @pytest.mark.asyncio
 async def test_lifespan_attaches_only_long_lived_state(monkeypatch):
     built: list[str | None] = []
@@ -158,7 +168,7 @@ class _Store:
         return self._sessions
 
 
-def _stub_lifespan(monkeypatch, tmp_path, *, tools=None, store=None) -> None:
+def _stub_lifespan(monkeypatch, tmp_path, *, tools=None, store=None, extra=None) -> None:
     """把 lifespan 的外部依赖全换成假的（上面几条测试各自铺的那一套，这里抽出来复用）。"""
 
     @asynccontextmanager
@@ -174,7 +184,9 @@ def _stub_lifespan(monkeypatch, tmp_path, *, tools=None, store=None) -> None:
     # 布局指向 tmp_path：启用了 bash 的用例会在 lifespan 里建哨兵文件，别写真的 backend/.evaai。
     monkeypatch.setattr("app.gateway.app.build_layout", lambda: SandboxLayout(root=Path(tmp_path)))
     monkeypatch.setattr("app.gateway.app.load_env_file", lambda _path: None)
-    monkeypatch.setattr("app.gateway.app.load_config", lambda _path: _config(tools=tools or _ONE_TOOL))
+    monkeypatch.setattr(
+        "app.gateway.app.load_config", lambda _path: _config(tools=tools or _ONE_TOOL, **(extra or {}))
+    )
     monkeypatch.setattr("app.gateway.app.make_sqlite_checkpointer", fake_saver)
     monkeypatch.setattr("app.gateway.app._prune_checkpoints", no_prune)
     monkeypatch.setattr("app.gateway.app.make_journal_store", lambda _config: store or _Store())
@@ -245,3 +257,59 @@ async def test_without_a_bash_entry_docker_is_never_touched(monkeypatch, tmp_pat
     app = SimpleNamespace(state=SimpleNamespace())
     async with lifespan(app):
         assert app.state.bash_enabled is False
+
+
+# --------------------------------------------------------------------------- #
+# 知识库（T18）
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_knowledge_tool_is_attached_when_enabled(monkeypatch, tmp_path):
+    """启用知识库时：检索工具与业务/MCP 工具并列进建图工厂，且启动了后台建索引。"""
+    from knowledge_fakes import DIM, FakeEmbedder
+
+    from app.tools import knowledge as knowledge_mod
+
+    source = tmp_path / "knowledge"
+    source.mkdir()
+    (source / "faq.md").write_text("# FAQ\n\n客服邮箱是 support@example.internal。", encoding="utf-8")
+
+    monkeypatch.setattr(knowledge_mod, "build_embedder", lambda _cfg: FakeEmbedder())
+    _stub_lifespan(
+        monkeypatch,
+        tmp_path,
+        extra={
+            "knowledge": {
+                "enabled": True,
+                "source": str(source),  # 绝对路径：绕开按项目根解析，别写进真的仓库目录
+                "persist_dir": str(tmp_path / "chroma"),
+                "fingerprint_db_path": str(tmp_path / "fp.sqlite"),
+                "embedding": {"api_key": "test-key", "dimensions": DIM},
+            }
+        },
+    )
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with lifespan(app):
+        runtime = app.state.knowledge
+        assert runtime is not None
+        assert runtime.tool.name == "knowledge_search"
+        assert "knowledge_search" in {tool.name for tool in app.state.agent_factory.tools}
+
+        await runtime.build_task  # 启动期只触发，不等待；这里显式等它以断言结果
+        assert runtime.retriever.status == "ready"
+        hits = await runtime.retriever.retrieve("客服邮箱")
+        assert hits and "support@example.internal" in hits[0].content
+        assert (tmp_path / "knowledge-view" / "faq.md").is_file()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_disabled_attaches_nothing(monkeypatch, tmp_path):
+    """没启用知识库时：不加工具、不建库（`app.state.knowledge` 是 None）。"""
+    _stub_lifespan(monkeypatch, tmp_path)
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with lifespan(app):
+        assert app.state.knowledge is None
+        assert "knowledge_search" not in {tool.name for tool in app.state.agent_factory.tools}

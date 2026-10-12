@@ -1,6 +1,8 @@
 # EvaAI 主配置模板 —— 复制为 config.yaml 后按需修改。
 # 值以 $ 开头会被解析为环境变量（来自 .env 或系统环境）。
 config_version: 1
+# 我们自己的日志级别（app.* / evaharness.* 两个命名空间；uvicorn 自己的日志另有其 --log-level）。
+# debug / info / warning / error / critical，大小写不敏感；写错回落到 info 并记一条警告。
 log_level: info
 
 # 模型 profile。`use` 指向实现类；`model` 是发给 API 的模型名；其余键透传给构造函数。
@@ -39,6 +41,32 @@ agent:
     trigger_tokens: 48000   # DeepSeek 上下文 64K，留出安全余量
     keep_messages: 20       # 尾部这么多条原样保留
     model: null             # 摘要用哪个模型 profile；null = 复用主模型
+
+# 知识库（T18）：把仓库根 knowledge/ 下的文本切成片段、嵌入、存进本地 ChromaDB，
+# 再由一个检索工具按需取用（命中片段写进 /workspace，只回路径）。见 docs/adr/0022。
+#
+# **模板里默认关**：打开它需要 DASHSCOPE_API_KEY（或换别的 OpenAI 兼容嵌入服务）。没 key 时
+# enabled=true 会**拒绝启动**（这是显式配置错，不是「功能没开」）——所以新机器上先留 false。
+#
+# 源目录即真相：改 knowledge/ 里的文件后重启，启动期比对指纹、只对**改动过的文件**重建索引；
+# 重建在后台跑，不拖慢启动。改嵌入模型 / 维度 / 切分参数会**整库重建**（配方记在库里，自动比对）。
+#
+# knowledge:
+#   enabled: false
+#   source: ./knowledge               # 相对路径按项目根解析
+#   persist_dir: ./data/knowledge     # Chroma 的持久化**目录**（不是文件）
+#   fingerprint_db_path: ./data/fingerprints.sqlite
+#   embedding:
+#     model: text-embedding-v4
+#     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+#     api_key: $DASHSCOPE_API_KEY
+#     dimensions: 1024                # 必须与向量库建表维度一致
+#     batch_size: 10                  # DashScope v4 每次最多 10 条
+#   chunk_size: 800                   # 按字符切（中文一字约一 token）
+#   chunk_overlap: 120
+#   top_k: 4
+#   fingerprint_mode: mtime           # mtime（快）| content（准）
+#   ignore: []                        # fnmatch 通配符（匹配相对路径），如 ["drafts/*"]
 
 # 工具集（T4）。每一项是一个工具；`use` 是 "module.path:attr"，指向**两种东西之一**：
 #   - 一个 BaseTool 实例（@tool 装饰过的函数就是）；

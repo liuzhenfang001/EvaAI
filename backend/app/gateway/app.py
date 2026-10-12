@@ -22,6 +22,7 @@ from app.gateway.mcp import load_mcp_tools
 from app.gateway.routers import chat, files, threads
 from app.gateway.run_registry import RunRegistry
 from app.gateway.skills import project_skills
+from app.tools.knowledge import start_knowledge
 from app.tools.registry import build_tools
 from app.tools.sandbox_layout import build_layout
 from evaharness.checkpoint.sqlite_saver import make_sqlite_checkpointer, prune_checkpoints
@@ -29,6 +30,7 @@ from evaharness.config.app_config import AppConfig, JournalConfig
 from evaharness.config.extensions_config import ExtensionsConfig
 from evaharness.config.loader import load_config, load_env_file, load_extensions
 from evaharness.journal.factory import make_journal_store
+from evaharness.logging import configure_logging
 from evaharness.sandbox import BASH_TOOL_NAME, docker, ensure_mount_check
 
 # backend/app/gateway/app.py -> 项目根（config.yaml / .env 所在目录）
@@ -61,6 +63,12 @@ async def lifespan(app: FastAPI):
     load_env_file(PROJECT_ROOT / ".env")
     config_data = load_config(PROJECT_ROOT / "config.yaml")
     app_config = AppConfig.model_validate(config_data)
+    # 消费 `log_level`：给 `app` / `evaharness` 两个命名空间配级别与 handler。
+    #
+    # 放在这里、而不是模块导入期：级别来自 config.yaml，而 uvicorn 自己的日志配置**从不碰 root**，
+    # 我们的 logger 因此默认继承 root 的 WARNING——INFO 全被丢掉、WARNING 只剩裸消息。不配的话，
+    # 「知识库无变化，跳过重建」这类 INFO 在真实部署里一条都看不见（见 ADR-0023）。
+    configure_logging(app_config.log_level)
     # 下一片「每请求参数从哪来」要从这里长出去（请求体 / 按会话持久化 / 全局 + 覆盖）。
     app.state.app_config = app_config
 
@@ -122,7 +130,23 @@ async def lifespan(app: FastAPI):
         # 放在 AgentFactory 之前：工具表是构造参数，MCP 工具与业务工具在建图眼里没有区别。
         mcp_tools = await load_mcp_tools(extensions.mcp_servers, business_tools=business_tools)
         app.state.mcp_tools = mcp_tools
-        all_tools = [*business_tools, *mcp_tools]
+
+        # 知识库（T18）：把仓库 knowledge/ 投影到 /knowledge，建向量库与检索工具，并把
+        # 「比对指纹 → 按文件增量重建」丢进**后台任务**——服务不等它（ADR-0022）。所以它与 MCP
+        # 同属「外部内容」，失败只警告/在检索那一步可见地报错，不拦启动。工具是启动期常量，
+        # 与业务工具、MCP 工具在建图眼里没有区别。
+        knowledge = await start_knowledge(
+            app_config.knowledge,
+            source_root=_resolve_path(app_config.knowledge.source),
+            view_root=sandbox_layout.knowledge_view_root(),
+            persist_dir=_resolve_path(app_config.knowledge.persist_dir),
+            fingerprint_db_path=_resolve_path(app_config.knowledge.fingerprint_db_path),
+        )
+        app.state.knowledge = knowledge
+        knowledge_tools = [knowledge.tool] if knowledge is not None else []
+        all_tools = [*business_tools, *mcp_tools, *knowledge_tools]
+        if knowledge is not None:
+            stack.push_async_callback(knowledge.aclose)
 
         app.state.agent_factory = AgentFactory(
             app_config, all_tools, checkpointer=saver, skills=skills

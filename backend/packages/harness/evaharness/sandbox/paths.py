@@ -9,6 +9,7 @@
 ``/output``          ``{根}/user/{会话}/output``                  读写
 ``/input``           ``{根}/user/{会话}/input``                   **只读**
 ``/skills``          ``{根}/skills-view``（全局，不按会话分）        **只读**
+``/knowledge``       ``{根}/knowledge-view``（全局，不按会话分）     **只读**
 ===================  ==========================================  ========
 
 **根与这张表由谁定**：这一层只提供**机制**——`:class:`SandboxLayout` 携带「根 + 挂载表 +
@@ -65,6 +66,7 @@ DEFAULT_MOUNTS: tuple[Mount, ...] = (
     Mount("/output", writable=True, parts=("user", _SESSION, "output")),
     Mount("/workspace", writable=True, parts=("user", _SESSION, "workspace")),
     Mount("/skills", writable=False, parts=("skills-view",)),
+    Mount("/knowledge", writable=False, parts=("knowledge-view",)),
 )
 """默认挂载表。用默认表就只需要给一个根，想要别的形状（更多挂载点、不同的只读策略）
 就自己传一份——**机制是通用的，表是策略**。"""
@@ -108,8 +110,8 @@ class SandboxLayout:
     def session_mounts(self) -> tuple[Mount, ...]:
         """按会话分的挂载点（``/input`` ``/output`` ``/workspace``）。
 
-        ``/skills`` 不在其中：它是**全局共享**的，不随会话建。它的生产者是技能投影
-        （**启动期**把仓库里的技能源目录镜像过来），所以它既不按会话分，也不由谁在会话里创建。
+        ``/skills`` 与 ``/knowledge`` 不在其中：它们是**全局共享**的，不随会话建。它们的
+        生产者是启动期的投影（把仓库里的源目录镜像过来），所以既不按会话分，也不由谁在会话里创建。
         """
         return tuple(mount for mount in self.mounts if _SESSION in mount.parts)
 
@@ -187,10 +189,18 @@ class SandboxLayout:
         从**当前挂载表**解析而不是让调用方拼 ``根 / "skills-view"``：宿主布局的知识只留在本模块，
         而且它必须与挂载表里那条 ``/skills`` 始终一致——两处各写一份迟早会漂移。
         """
+        return self._view_root("/skills")
+
+    def knowledge_view_root(self) -> Path:
+        """``/knowledge`` 挂载点的**宿主**目录（理由同 :meth:`skills_view_root`）。"""
+        return self._view_root("/knowledge")
+
+    def _view_root(self, virtual: str) -> Path:
+        """某个**全局只读挂载点**的宿主目录——视图根由挂载表独家给出。"""
         for mount in self.mounts:
-            if mount.virtual == "/skills":
+            if mount.virtual == virtual:
                 return mount.host_root(self.root, "")
-        raise PathNotAllowedError("当前挂载表里没有 /skills，技能视图无处安放")
+        raise PathNotAllowedError(f"当前挂载表里没有 {virtual}，它的视图无处安放")
 
     def host_forms(self) -> set[str]:
         """宿主根的各种写法——掩码要盖住 docker / OSError 可能吐出来的每一样。"""

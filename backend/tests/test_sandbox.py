@@ -60,7 +60,9 @@ def test_skills_is_global_while_the_others_are_per_session(tmp_path):
 
 
 def test_every_mount_is_reachable(box):
-    assert {mount.virtual for mount in DEFAULT_MOUNTS} == {"/input", "/output", "/workspace", "/skills"}
+    assert {mount.virtual for mount in DEFAULT_MOUNTS} == {
+        "/input", "/output", "/workspace", "/skills", "/knowledge",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -68,7 +70,7 @@ def test_every_mount_is_reachable(box):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("virtual", ["/input/x.txt", "/skills/x.md"])
+@pytest.mark.parametrize("virtual", ["/input/x.txt", "/skills/x.md", "/knowledge/x.md"])
 def test_read_only_mounts_refuse_writes(box, virtual):
     with pytest.raises(PathNotAllowedError, match="只读"):
         box.resolve(virtual, write=True)
@@ -77,6 +79,7 @@ def test_read_only_mounts_refuse_writes(box, virtual):
 def test_read_only_mounts_still_read(box):
     assert box.resolve("/input/x.txt").name == "x.txt"
     assert box.resolve("/skills/x.md").name == "x.md"
+    assert box.resolve("/knowledge/x.md").name == "x.md"
 
 
 @pytest.mark.parametrize("virtual", ["/workspace/x.txt", "/output/x.txt"])

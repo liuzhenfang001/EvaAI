@@ -95,10 +95,10 @@ T13 起 agent 的工具表还有**第二个来源**：MCP（见下），它不�
 _Avoid_: tool loader, 插件系统, 工具工厂
 
 **挂载根 / 虚拟路径（mount root / virtual path）**：
-模型看到的目录名（`/workspace`、`/output`、`/input`、`/skills`）与它们对应的宿主目录之间的
-映射。**宿主绝对路径永远不进模型上下文**（泄漏 + 不可移植）。这四个挂载点曾经是「将来换真沙箱」
-的唯一缝——T15 换了（见「沙箱容器」），而缝的形状没变：**同一个虚拟路径在两边都是同一个路径**。
-这张表本身（名字 + 读写权限）由**沙箱布局**带着走，框架给默认四条、部署可覆盖。
+模型看到的目录名（`/workspace`、`/output`、`/input`、`/skills`、`/knowledge`）与它们对应的
+宿主目录之间的映射。**宿主绝对路径永远不进模型上下文**（泄漏 + 不可移植）。这些挂载点曾经是
+「将来换真沙箱」的唯一缝——T15 换了（见「沙箱容器」），而缝的形状没变：**同一个虚拟路径在两边
+都是同一个路径**。这张表本身（名字 + 读写权限）由**沙箱布局**带着走，框架给默认五条、部署可覆盖。
 _Avoid_: 沙箱路径, root path, 别名目录
 
 **沙箱容器（sandbox container）**：
@@ -126,9 +126,12 @@ _Avoid_: 沙箱配置（那是给人看的旋钮，这是运行期注入的对�
 _Avoid_: tmp, 临时目录, sandbox
 
 **只读挂载（read-only mount）**：
-`/input` 与 `/skills` 的权限。前者因为改坏原件不可逆，后者因为可被模型改写的技能等于把提示
-注入面交给它。T14 起 `/skills` 有了生产者——**启动期**把仓库里的技能源目录镜像过来（
-:func:`app.gateway.skills.project_skills`），所以它既不按会话分，也不由谁在会话里创建。
+`/input`、`/skills`、`/knowledge` 的权限。`/input` 因为改坏原件不可逆，`/skills` 因为可被模型
+改写的技能等于把提示注入面交给它，`/knowledge` 因为它是知识库的原文（源是仓库里的 `knowledge/`，
+视图只是它的镜像，改了也没意义）。T14 起 `/skills` 有了生产者——**启动期**把仓库里的技能源目录
+镜像过来（:func:`app.gateway.skills.project_skills`）；T18 起 `/knowledge` 有了生产者
+（:func:`app.tools.knowledge.project_knowledge`，同一条路）。所以它们既不按会话分，也不由谁在
+会话里创建。
 _Avoid_: 权限, ACL
 
 **交付文件（presented file）**：
@@ -162,14 +165,51 @@ _Avoid_: 提示词模板、插件、工具（技能不调工具，它告诉模�
 拼装代码不能顺手加一个换行，否则没有技能的部署会拿到一份不同的提示词。
 _Avoid_: 技能列表、技能索引（那是参照项目的 `skill_index`，指「只给名字」的那条渐进披露路径）
 
+### 知识库
+
+**知识库（knowledge base）**：
+仓库根 `knowledge/` 下的文本，启动期切分、嵌入、存进本地 ChromaDB 向量库，模型再用
+「检索工具」按需取用。**源目录即真相**，启动期镜像到只读的 `/knowledge`；索引按**文件**增量重建。
+它**不是**「会话记忆」——那是 checkpoint 里的事，与知识库是两条线。
+_Avoid_: RAG（那是一门技术的名字，不是这个实体）、向量库、语料库、记忆
+
+**索引配方（index recipe）**：
+这份索引是「**怎么算出来的**」——嵌入模型 / 端点 / 维度 / 切分参数 / 切分配方版本号。它记在向量库
+里，启动时比对：不一致就**整库重建**。有了它，换嵌入模型不会留下「源没变、向量却作废」的静默错误
+（症状是检索变差或维度对不上直接报错）。
+_Avoid_: 配置指纹、索引版本、schema 版本
+
+**检索工具（retrieval tool）**：
+知识库对模型暴露的**唯一**入口，工具名 `knowledge_search`。它**不把正文塞回上下文**：命中的片段
+写进 `/workspace/retrieved/<query 哈希>/chunk_i.md`，只回路径，模型自己 `read_file` 去读（官方
+Deep Agents 的 retrieve-offload 形态）。这是「上下文预算按需」那条约定在 RAG 上的落点。
+_Avoid_: 知识库工具、搜索工具、retriever（那是它内部用的向量检索器）
+
+**指纹（fingerprint）/ 变更集（ChangeSet）**：
+指纹是一组路径压成的「相对路径 → 单文件指纹」快照（`TreeFingerprint`），**粒度到单个文件**；
+变更集是两份指纹的差异，分 `added` / `removed` / `modified` 三个集合。它**只回答「变了没、变哪些」**，
+不决定任何动作。放在 harness（`evaharness/fingerprint`）、**不 import 任何业务模块**——知识库是它
+的第一个消费者，config / 技能的接入是后续。
+_Avoid_: 哈希、摘要、checksum、脏标记
+
+**按文件增量重建**：
+知识库索引的重建单位是**单个源文件**而非整库：只有 `ChangeSet` 里变动的文件被重切、重嵌、替换，
+删掉的文件随之清出。所以「改了一个文件」的代价是重嵌那一个文件。
+_Avoid_: 增量索引、增量同步、差分更新
+
+**就绪闸门（readiness gate）**：
+`KnowledgeRetriever` 上的一道等待：索引重建在**后台任务**里跑（服务不等它），检索前先等就绪信号。
+构建**失败**时检索**可见地报错**（`KnowledgeUnavailable`），而不是静默返回空结果。
+_Avoid_: 预热、加载中标记、健康检查
+
 ### 交付
 
 **垂直切片（tracer bullet）**：
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T17**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15、T15 是 #16、T16 是 #17、T17 是 #18），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)，T15（docker 沙箱）见 [Issue #16](https://github.com/liuzhenfang001/EvaAI/issues/16)，T16（Plan-Exec 下线）见 [Issue #17](https://github.com/liuzhenfang001/EvaAI/issues/17)，T17（沙箱上移 harness）见 [Issue #18](https://github.com/liuzhenfang001/EvaAI/issues/18)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
+**T1–T18**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15、T15 是 #16、T16 是 #17、T17 是 #18、T18 是 #19），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)，T15（docker 沙箱）见 [Issue #16](https://github.com/liuzhenfang001/EvaAI/issues/16)，T16（Plan-Exec 下线）见 [Issue #17](https://github.com/liuzhenfang001/EvaAI/issues/17)，T17（沙箱上移 harness）见 [Issue #18](https://github.com/liuzhenfang001/EvaAI/issues/18)，T18（RAG 知识库）见 [Issue #19](https://github.com/liuzhenfang001/EvaAI/issues/19)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测

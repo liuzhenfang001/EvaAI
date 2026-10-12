@@ -94,6 +94,51 @@ class AgentConfig(BaseModel):
     """
 
 
+class EmbeddingConfig(BaseModel):
+    """嵌入模型的配置。
+
+    默认指向 DashScope 通义的 **OpenAI 兼容端点**——所以走 :class:`OpenAIEmbeddings` 就行，
+    不必为它引一个新 SDK（见 ``docs/research/rag-knowledge-base.md`` §3）。
+
+    ``dimensions`` 必须与向量库建表时的维度一致。``batch_size`` 是**每次请求送多少条文本**：
+    DashScope v4 实测上限是 10 条/请求，所以默认 10；OpenAI 原生可以大得多。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    model: str = "text-embedding-v4"
+    base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    api_key: str | None = None
+    dimensions: int = 1024
+    batch_size: int = 10
+
+
+class KnowledgeConfig(BaseModel):
+    """RAG 知识库配置。
+
+    ``enabled`` **默认关**：没有嵌入 key 时不该因为一个可选功能让服务起不来（也没有意义）。
+    打开它 = 提供了源目录与嵌入 profile，且 ``api_key`` 已解析出来。
+
+    ``source`` / ``persist_dir`` / ``fingerprint_db_path`` 的相对路径按**项目根**解析（与
+    ``checkpoint`` / ``journal`` 同一口径）。``persist_dir`` 是 Chroma 的**持久化目录**
+    （不是文件）。``fingerprint_mode`` 是 :func:`evaharness.fingerprint.fingerprint` 的模式：
+    ``"mtime"`` 快、``"content"`` 准。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    source: str = "./knowledge"
+    persist_dir: str = "./data/knowledge"
+    fingerprint_db_path: str = "./data/fingerprints.sqlite"
+    embedding: EmbeddingConfig = EmbeddingConfig()
+    chunk_size: int = 800
+    chunk_overlap: int = 120
+    top_k: int = 4
+    fingerprint_mode: str = "mtime"
+    ignore: list[str] = []
+
+
 class ToolConfig(BaseModel):
     """一个工具的注册项。
 
@@ -128,6 +173,7 @@ class AppConfig(BaseModel):
     checkpoint: CheckpointConfig = CheckpointConfig()
     journal: JournalConfig = JournalConfig()
     agent: AgentConfig = AgentConfig()
+    knowledge: KnowledgeConfig = KnowledgeConfig()
     tools: list[ToolConfig] = []
     """工具注册表。**缺省是空表，而且空表会被拒绝启动**（见 app 层的 ``build_tools``）。
 

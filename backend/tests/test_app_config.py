@@ -122,3 +122,38 @@ def test_app_config_tools_section_is_parsed():
         tools=[{"name": "get_current_time", "use": "app.tools.builtin:get_current_time"}],
     )
     assert cfg.tools[0].name == "get_current_time"
+
+
+def test_knowledge_config_defaults_are_off():
+    """知识库默认**关**：没有嵌入 key 时，一个可选功能不该让服务起不来。"""
+    cfg = AppConfig(config_version=1, models=[ModelConfig(name="a", model="m-a")])
+    assert cfg.knowledge.enabled is False
+    assert cfg.knowledge.source == "./knowledge"
+    assert cfg.knowledge.persist_dir == "./data/knowledge"
+    assert cfg.knowledge.embedding.model == "text-embedding-v4"
+    assert cfg.knowledge.embedding.dimensions == 1024
+    assert cfg.knowledge.embedding.batch_size == 10
+    assert cfg.knowledge.top_k == 4
+
+
+def test_knowledge_section_is_parsed():
+    cfg = AppConfig(
+        config_version=1,
+        models=[ModelConfig(name="a", model="m-a")],
+        knowledge={
+            "enabled": True,
+            "source": "./docs-kb",
+            "chunk_size": 500,
+            "ignore": ["drafts/*"],
+            "embedding": {"api_key": "k", "dimensions": 512},
+        },
+    )
+    assert cfg.knowledge.enabled is True
+    assert cfg.knowledge.source == "./docs-kb"
+    assert cfg.knowledge.chunk_size == 500
+    assert cfg.knowledge.ignore == ["drafts/*"]
+    assert cfg.knowledge.embedding.api_key == "k"
+    assert cfg.knowledge.embedding.dimensions == 512
+    # 没覆盖的键保留默认。
+    assert cfg.knowledge.chunk_overlap == 120
+    assert cfg.knowledge.embedding.model == "text-embedding-v4"

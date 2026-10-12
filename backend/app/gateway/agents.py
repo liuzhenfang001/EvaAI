@@ -31,7 +31,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 
-from app.prompts import BASH_SECTION, SUBAGENT_PROMPT, SYSTEM_PROMPT
+from app.prompts import BASH_SECTION, KNOWLEDGE_SECTION, SUBAGENT_PROMPT, SYSTEM_PROMPT
 from app.tools.present_files import PRESENT_FILES_NAME
 from evaharness.agents.lead_agent import (
     build_lead_middlewares,
@@ -41,6 +41,7 @@ from evaharness.agents.lead_agent import (
 )
 from evaharness.agents.options import RunOptions
 from evaharness.config.app_config import AppConfig
+from evaharness.knowledge import KNOWLEDGE_SEARCH_NAME
 from evaharness.models.factory import create_chat_model
 from evaharness.sandbox import BASH_TOOL_NAME
 from evaharness.skills import Skill, render_skills_section
@@ -112,6 +113,11 @@ class AgentFactory:
         # bash 段只有工具表里**真的有** bash 时才拼：没启用这个工具的部署不该在提示词里
         # 看到它，否则模型会去调一个不存在的名字。
         self._bash_section = BASH_SECTION if any(tool.name == BASH_TOOL_NAME for tool in tools) else ""
+        # 知识库段同理：只有检索工具真的在表里时才拼。它顺带是「/knowledge 这个第五个只读目录
+        # 到底存不存在」的告知——不拼的话模型不会知道该去那儿读全文。
+        self._knowledge_section = (
+            KNOWLEDGE_SECTION if any(tool.name == KNOWLEDGE_SEARCH_NAME for tool in tools) else ""
+        )
         self._model_factory: ModelFactory = model_factory if model_factory is not None else self._create_model
 
     def _prompt(self, base: str) -> str:
@@ -124,7 +130,11 @@ class AgentFactory:
         中间件链的名字，`tests/test_lead_agent_memory.py` 断言模型收到 10 条消息——插消息会把后者
         顶破，加中间件会把前者顶破。拼进 `system_prompt` 两条都不动（system 那条只是变长）。
         """
-        sections = [section for section in (self._skill_section, self._bash_section) if section]
+        sections = [
+            section
+            for section in (self._skill_section, self._bash_section, self._knowledge_section)
+            if section
+        ]
         return "\n\n".join([base, *sections])
 
     def lead(self, options: RunOptions | None = None) -> CompiledStateGraph:
