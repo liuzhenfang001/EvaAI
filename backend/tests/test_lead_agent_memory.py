@@ -13,8 +13,9 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
-from evaharness.agents.lead_agent import make_lead_agent, run_lead_agent
+from evaharness.agents.lead_agent import make_lead_agent
 from evaharness.checkpoint import delete_session_checkpoints, lead_thread_id
+from evaharness.runtime import run_agent
 
 
 def _build(*answers: str, saver=None) -> tuple[CompiledStateGraph, CallRecordingFake]:
@@ -35,7 +36,7 @@ async def _threads(saver: InMemorySaver) -> set[str]:
 
 
 async def _say(agent: CompiledStateGraph, text: str, thread_id: str) -> None:
-    await collect(run_lead_agent(text, agent=agent, thread_id=thread_id))
+    await collect(run_agent(text, agent=agent, thread_id=thread_id))
 
 
 @pytest.mark.asyncio
@@ -124,7 +125,7 @@ async def test_a_turn_interrupted_mid_tool_still_leaves_the_request_in_memory():
     agent = make_lead_agent(model, [hang], checkpointer=InMemorySaver())
 
     async def first() -> None:
-        async for _ in run_lead_agent("我的问题", agent=agent, thread_id="th-1"):
+        async for _ in run_agent("我的问题", agent=agent, thread_id="th-1"):
             pass
 
     task = asyncio.create_task(first())

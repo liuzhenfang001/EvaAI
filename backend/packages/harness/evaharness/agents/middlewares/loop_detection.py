@@ -7,7 +7,7 @@
   （延迟到下一次模型调用，作为追加的 HumanMessage，避免破坏 tool 配对）；
 - 出现 >= hard_limit 次 → 剥掉 tool_calls，强制产出文本最终回复。
 
-追踪状态按**检查点坐标**分桶（:func:`~evaharness.agents.middlewares.context.thread_bucket`）。
+追踪状态按**检查点坐标**分桶（:func:`~evaharness.runtime.thread_bucket`）。
 **桶在每次运行开始时清空**（``before_agent``）——坐标可能跨轮复用（lead agent 就是），
 而「循环」是一次运行内的现象，不是跨轮的。不重置的话，同一个工具在第 3 轮会被误判、
 第 5 轮直接被掐断。
@@ -28,8 +28,8 @@ from langchain.agents.middleware.types import ModelCallResult, ModelRequest, Mod
 from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
-from evaharness.agents.middlewares.context import thread_bucket
 from evaharness.agents.middlewares.forced_stop import strip_tool_calls
+from evaharness.runtime import thread_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,7 @@ _WARNING_MSG = (
     "you accomplished so far."
 )
 _HARD_STOP_MSG = (
-    "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with "
-    "results collected so far."
+    "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with results collected so far."
 )
 
 _SALIENT_FIELDS = ("path", "url", "query", "command", "pattern", "glob", "cmd")
@@ -59,8 +58,7 @@ def _stable_tool_key(name: str, args: dict) -> str:
 def _hash_tool_calls(tool_calls: list[dict]) -> str:
     """对工具调用集合做顺序无关的确定性 hash。"""
     normalized = sorted(
-        f"{tc.get('name', '')}:{_stable_tool_key(tc.get('name', ''), tc.get('args', {}) or {})}"
-        for tc in tool_calls
+        f"{tc.get('name', '')}:{_stable_tool_key(tc.get('name', ''), tc.get('args', {}) or {})}" for tc in tool_calls
     )
     return hashlib.md5(json.dumps(normalized, sort_keys=True).encode()).hexdigest()[:12]
 
@@ -91,7 +89,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         与「``tool_calls`` 被剥掉、模型被迫产出文本」这个行为。
 
         曾经还有一条「写进 ``runtime.context['stop_reason']``」的旁路，T9 删掉了：主路径
-        传的是 ``LeadContext``（永远进不去那个 dict 分支），而它进得去的时候是在**改写
+        传的是 ``RunContext``（永远进不去那个 dict 分支），而它进得去的时候是在**改写
         调用方给的对象**——把跨请求写种回中间件的路子，正是 T9 要消灭的。
         """
         return self._stop_reason.pop(thread_id, None)

@@ -10,9 +10,9 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from evaharness.agents.events import MessagesEvent, RunEndEvent, TaskEndEvent, TaskStartEvent
 from evaharness.journal.journal import RunJournal, journaled
 from evaharness.journal.stores import MemoryJournalStore
+from evaharness.runtime import MessagesEvent, RunEndEvent, TaskEndEvent, TaskStartEvent
 
 THREAD = "th-1"
 

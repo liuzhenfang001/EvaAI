@@ -20,7 +20,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.gateway.agents import AgentFactory
 from app.gateway.mcp import load_mcp_tools
 from app.gateway.routers import chat, files, threads
-from app.gateway.run_registry import RunRegistry
 from app.gateway.skills import project_skills
 from app.tools.knowledge import start_knowledge
 from app.tools.registry import build_tools
@@ -31,6 +30,7 @@ from evaharness.config.extensions_config import ExtensionsConfig
 from evaharness.config.loader import load_config, load_env_file, load_extensions
 from evaharness.journal.factory import make_journal_store
 from evaharness.logging import configure_logging
+from evaharness.runtime import RunRegistry
 from evaharness.sandbox import BASH_TOOL_NAME, docker, ensure_mount_check
 
 # backend/app/gateway/app.py -> 项目根（config.yaml / .env 所在目录）
@@ -77,9 +77,7 @@ async def lifespan(app: FastAPI):
     # 它和 .env / config.yaml 一样是**必须存在**的一层——文件缺失就拒绝启动，与另两层同口径
     # （所以 README 的「快速开始」里有一句 cp）。一个写错的 server 不会拖垮整份文件：
     # 坏的在那里就被摘掉并记警告（见 `parse_mcp_servers`）。
-    extensions = ExtensionsConfig.model_validate(
-        load_extensions(PROJECT_ROOT / "extensions_config.json")
-    )
+    extensions = ExtensionsConfig.model_validate(load_extensions(PROJECT_ROOT / "extensions_config.json"))
     app.state.extensions_config = extensions
 
     # 工具从配置里来（注册项写错、重名、name 不匹配、工厂参数写错都在这里炸）。必须在
@@ -148,9 +146,7 @@ async def lifespan(app: FastAPI):
         if knowledge is not None:
             stack.push_async_callback(knowledge.aclose)
 
-        app.state.agent_factory = AgentFactory(
-            app_config, all_tools, checkpointer=saver, skills=skills
-        )
+        app.state.agent_factory = AgentFactory(app_config, all_tools, checkpointer=saver, skills=skills)
 
         # 运行中 run 的登记表：取消端点靠它触达正在跑的 run（T5）。与 checkpointer 一样
         # 是长命共享物，但**没有活跃事件循环的约束**——只是一个 dict。

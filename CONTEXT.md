@@ -18,6 +18,14 @@ EvaAI 中装填具体实例（人设、工具、技能）的那一层。**工具
 从 T17 起在 harness（ADR-0020），两者别混。
 _Avoid_: application, 业务代码, server
 
+**runtime（运行层）**：
+harness 里承接「跑一次 agent」的那个包：事件的契约、这一轮的运行身份、以及跑它的机制。
+它是 harness 的**契约中枢**——沙箱、知识库、journal、模型这些机制都依赖它，而它谁也不依赖
+（不 import `agents`、不 import 任何工具包），这条方向由 `tests/test_harness_boundary.py` 的一条
+守卫测试钉死。内部按 `event` / `context` / `runs` 三个子包分，但**对外只认
+`evaharness.runtime` 这一条路径**——子包是给人导航用的，不是 API 面。
+_Avoid_: 运行时（那指代码跑起来的那个环境，是另一回事）、执行层、runtime 模块
+
 ### 执行模型
 
 **ReAct**：
@@ -65,6 +73,18 @@ _Avoid_: 思维链、CoT、推理（这三个都太宽，指不清是「模型�
 由主 Agent 通过 `task` 工具派发出去、独立完成**一件事**的 ReAct 图。它看不到父对话，
 中间步骤也不会回流到主对话——**上下文隔离才是它存在的理由**，不是「更快」。
 _Avoid_: worker, 任务 agent, child agent
+
+**运行入口（`run_agent`）**：
+跑一轮 agent、把图的输出翻成事件流的那**一个**函数。它只吃一张编译好的图与一串参数，
+不认识「lead」是谁——泳道（`lane`）与路径（`mode`）都是参数，缺省值对着主 Agent。
+事件序列以 `run_start` 开场、以终态事件收尾。
+_Avoid_: runner、执行器、agent loop、驱动（那是「谁在调它」的说法）
+
+**运行上下文（`RunContext`）**：
+一次运行在图里对中间件与工具**自称**的样子：会话 id、检查点坐标、运行 id，以及这一轮要用的
+沙箱布局。工具与中间件靠它知道「此刻是哪次运行」——**不是**靠进程全局，也不是靠读配置。
+_Avoid_: context（太宽）、会话（那是它三个字段之一）、runtime context（与上游 langgraph 的
+`Runtime` 撞名）
 
 ### 装配
 
@@ -114,7 +134,7 @@ _Avoid_: 沙箱（在本项目里那指虚拟路径那一层机制）、docker �
 **沙箱布局（sandbox layout）**：
 一次运行注入的「**宿主根 + 挂载表 + 相对路径的落点**」，类型是 `SandboxLayout`。它取代了
 T17 之前的模块全局 `SANDBOX_ROOT`：宿主根与挂载表是**部署策略**，由 app 构造一次、经
-**运行上下文**（`LeadContext` 的 `sandbox` 字段）下发给工具——与 `session_id` 同一个口子。
+**运行上下文**（`RunContext` 的 `sandbox` 字段）下发给工具——与 `session_id` 同一个口子。
 所以框架里没有任何全局决定「文件落在磁盘的哪里」，而测试换根的方式是「造一个指向 `tmp_path`
 的布局」，不是 monkeypatch 全局。**取不到就抛**（与 `session_id` 同口径）：兜到某个猜出来的
 目录会把文件写到不该写的地方，而且不可逆。
@@ -208,8 +228,8 @@ _Avoid_: 预热、加载中标记、健康检查
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T18**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15、T15 是 #16、T16 是 #17、T17 是 #18、T18 是 #19），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)，T15（docker 沙箱）见 [Issue #16](https://github.com/liuzhenfang001/EvaAI/issues/16)，T16（Plan-Exec 下线）见 [Issue #17](https://github.com/liuzhenfang001/EvaAI/issues/17)，T17（沙箱上移 harness）见 [Issue #18](https://github.com/liuzhenfang001/EvaAI/issues/18)，T18（RAG 知识库）见 [Issue #19](https://github.com/liuzhenfang001/EvaAI/issues/19)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
+**T1–T19**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15、T15 是 #16、T16 是 #17、T17 是 #18、T18 是 #19、T19 是 #20），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)，T15（docker 沙箱）见 [Issue #16](https://github.com/liuzhenfang001/EvaAI/issues/16)，T16（Plan-Exec 下线）见 [Issue #17](https://github.com/liuzhenfang001/EvaAI/issues/17)，T17（沙箱上移 harness）见 [Issue #18](https://github.com/liuzhenfang001/EvaAI/issues/18)，T18（RAG 知识库）见 [Issue #19](https://github.com/liuzhenfang001/EvaAI/issues/19)。T19（运行期收进 `runtime`）见 [Issue #20](https://github.com/liuzhenfang001/EvaAI/issues/20)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测
@@ -262,7 +282,8 @@ T16 起只有一条路径（新运行写死的都是 `react`），这个字段**
 _Avoid_: 用 `plan` 事件是否存在来判断路径
 
 **RunEvent**：
-RunJournal 中的单条事件记录。
+RunJournal 中的单条事件记录，也是 SSE 帧的来源。它住在 **runtime** 里——它是「一次运行说了
+什么」的契约，与哪条路径在跑无关。
 _Avoid_: log entry, span
 
 ### 参照

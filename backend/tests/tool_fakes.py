@@ -10,10 +10,10 @@ from typing import Any
 
 from langchain.tools import ToolRuntime
 
-from evaharness.agents.lead_agent import LeadContext
+from evaharness.runtime import RunContext
 from evaharness.sandbox import Completed, SandboxLayout
 
-WORKSPACE_CONTEXT = LeadContext(session_id="th-1", thread_id="th-1:lead", run_id="run-1")
+WORKSPACE_CONTEXT = RunContext(session_id="th-1", thread_id="th-1:lead", run_id="run-1")
 """lead agent 与子 agent 的形状（带类型的对象）。"""
 
 COORDINATE_CONTEXT: dict[str, Any] = {"thread_id": "th-1:run-1:t1"}
@@ -30,7 +30,7 @@ def lead_context(
     *,
     session: str = "th-1",
     run_id: str = "run-1",
-) -> LeadContext:
+) -> RunContext:
     """带（或不带）沙箱布局的 lead 形状上下文。
 
     T17 起沙箱的宿主根与挂载表**从运行上下文进**——不再有模块全局可以 monkeypatch。所以
@@ -38,7 +38,7 @@ def lead_context(
 
         rt = fake_runtime(lead_context(SandboxLayout(root=tmp_path)))
     """
-    return LeadContext(
+    return RunContext(
         session_id=session,
         thread_id=f"{session}:lead",
         run_id=run_id,
@@ -121,7 +121,7 @@ class FakeDockerRunner:
         if self.create_conflict:
             # 撞名 = 容器已经被另一个并发请求建出来了，所以它在 existing 里。
             self.existing.add(argv[argv.index("--name") + 1])
-            return Completed(returncode=1, output=b'Conflict. The container name is already in use.')
+            return Completed(returncode=1, output=b"Conflict. The container name is already in use.")
         if self.create_error is not None:
             return Completed(returncode=1, output=self.create_error)
         if "--name" in argv:  # 启动期探针那次 run 是一次性的，不带名字

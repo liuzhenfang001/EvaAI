@@ -17,9 +17,10 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.tools.registry import build_tools
-from evaharness.agents.lead_agent import TASK_TOOL_NAME, make_lead_agent, run_lead_agent
+from evaharness.agents.lead_agent import TASK_TOOL_NAME, make_lead_agent
 from evaharness.config.app_config import AppConfig, ToolConfig
 from evaharness.reflection import ReflectionError
+from evaharness.runtime import run_agent
 from evaharness.sandbox import SandboxLayout
 
 
@@ -164,7 +165,7 @@ def test_a_brand_new_tool_needs_only_a_module_and_a_config_line(monkeypatch):
 async def test_a_registered_tool_is_reachable_through_the_real_graph(tmp_path):
     """更强的一条：新工具不仅进得了列表，模型真调它时**真的跑到底、结果真的落盘**。
 
-    整条链路都是真的（``create_agent`` / ToolNode / ``LeadContext`` / 沙箱），只有模型是假的。
+    整条链路都是真的（``create_agent`` / ToolNode / ``RunContext`` / 沙箱），只有模型是假的。
     """
     layout = SandboxLayout(root=tmp_path)
 
@@ -173,9 +174,7 @@ async def test_a_registered_tool_is_reachable_through_the_real_graph(tmp_path):
             [
                 AIMessage(
                     content="",
-                    tool_calls=[
-                        {"name": "write_file", "args": {"path": "note.txt", "content": "hi"}, "id": "c1"}
-                    ],
+                    tool_calls=[{"name": "write_file", "args": {"path": "note.txt", "content": "hi"}, "id": "c1"}],
                 ),
                 AIMessage(content="写好了"),
             ]
@@ -184,7 +183,7 @@ async def test_a_registered_tool_is_reachable_through_the_real_graph(tmp_path):
     tools = build_tools(_config(_entry("write_file", "evaharness.sandbox.file_ops:write_file")))
     agent = make_lead_agent(model, tools, checkpointer=InMemorySaver())
 
-    events = await collect(run_lead_agent("写个文件", agent=agent, thread_id="th-1", sandbox=layout))
+    events = await collect(run_agent("写个文件", agent=agent, thread_id="th-1", sandbox=layout))
 
     assert events[-1].status == "completed"
     written = tmp_path / "user" / "th-1" / "workspace" / "note.txt"
@@ -229,12 +228,12 @@ async def test_presenting_a_file_reaches_the_event_stream(tmp_path):
     )
     agent = make_lead_agent(model, tools, checkpointer=InMemorySaver())
 
-    events = await collect(run_lead_agent("写个快速排序并交给我", agent=agent, thread_id="th-1", sandbox=layout))
+    events = await collect(run_agent("写个快速排序并交给我", agent=agent, thread_id="th-1", sandbox=layout))
 
     presented = [e for e in events if e.type == "files_presented"]
     assert len(presented) == 1
     assert presented[0].files[0].path == "/output/quicksort.go"
-    assert presented[0].files[0].size == len("package main".encode())
+    assert presented[0].files[0].size == len(b"package main")
     assert events[-1].status == "completed"
 
 

@@ -5,7 +5,7 @@
 「呈现给用户」本来就是一个**意图**，该由模型表达。这也是参照项目 DeerFlow 的做法。
 
 **为什么成功时没有返回值般的产物**：它不改 state、不写文件，只是往 langgraph 的 custom 流里
-送一个载荷（见 :mod:`evaharness.agents.lead_agent.custom_events`），由 runner 翻成
+送一个载荷（见 :mod:`evaharness.runtime.event.custom`），由运行入口翻成
 ``files_presented`` 事件。事件经 SSE 到前端画卡片、经 RunJournal 落盘，**刷新后卡片仍在**。
 
 **为什么它在 app 而文件工具在 harness**：T17 之前这里的理由曾是「它依赖 app 层的 Sandbox，
@@ -28,8 +28,7 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
-from evaharness.agents.lead_agent import present_files_payload
-from evaharness.agents.middlewares.context import sandbox_layout, session_id
+from evaharness.runtime import present_files_payload, sandbox_layout, session_id
 
 PRESENT_FILES_NAME = "present_files"
 """工具名。**子 agent 的图里必须把它排除掉**——子 agent 走 ``ainvoke``、没有 custom 模式，

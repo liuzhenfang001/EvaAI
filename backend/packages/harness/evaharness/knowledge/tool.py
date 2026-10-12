@@ -21,8 +21,8 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
-from evaharness.agents.middlewares.context import sandbox_layout, session_id
 from evaharness.knowledge.retriever import KnowledgeRetriever
+from evaharness.runtime import sandbox_layout, session_id
 
 KNOWLEDGE_SEARCH_NAME = "knowledge_search"
 """工具名。也是提示词决定要不要拼「知识库」那一段的依据。"""
@@ -59,10 +59,7 @@ def make_knowledge_search(retriever: KnowledgeRetriever) -> BaseTool:
             target.write_text(header + hit.content, encoding="utf-8")
             lines.append(f"- {box.display(target)} (from: {hit.source})")
 
-        return (
-            f"Found {len(hits)} matching passage(s). Read them with read_file:\n"
-            + "\n".join(lines)
-        )
+        return f"Found {len(hits)} matching passage(s). Read them with read_file:\n" + "\n".join(lines)
 
     return knowledge_search
 

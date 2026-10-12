@@ -3,9 +3,9 @@
 import pytest
 from langchain_openai import ChatOpenAI
 
-from evaharness.agents.options import RunOptions
 from evaharness.config.app_config import AppConfig, ModelConfig
 from evaharness.models.factory import create_chat_model, thinking_model_kwargs
+from evaharness.runtime import RunOptions
 
 
 def _cfg(*model_kwargs):

@@ -8,12 +8,12 @@ import json
 
 import pytest
 
-from evaharness.agents.events import MessagesEvent, RunStartEvent, TaskEndEvent
 from evaharness.journal.stores import (
     JournalEntry,
     JsonlJournalStore,
     MemoryJournalStore,
 )
+from evaharness.runtime import MessagesEvent, RunStartEvent, TaskEndEvent
 
 THREAD = "th-1"
 

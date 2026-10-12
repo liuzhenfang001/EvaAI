@@ -20,7 +20,7 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
-from evaharness.agents.middlewares.context import sandbox_layout, session_id
+from evaharness.runtime import sandbox_layout, session_id
 from evaharness.sandbox.paths import Sandbox
 
 MAX_READ_CHARS = 16_000
@@ -85,8 +85,7 @@ def _text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         raise ValueError(
-            f"cannot read {path.name!r} as UTF-8 text — it looks like a binary file. "
-            "read_file only handles text."
+            f"cannot read {path.name!r} as UTF-8 text — it looks like a binary file. read_file only handles text."
         ) from None
     except OSError as exc:
         raise ValueError(f"cannot read {path.name!r}: {exc.strerror or type(exc).__name__}") from None

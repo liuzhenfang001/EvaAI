@@ -95,7 +95,7 @@ def test_an_unknown_extension_leaves_mime_empty(layout):
 
 
 def test_a_coordinate_shaped_context_also_works(layout):
-    """会话 id 有两种上下文形状（``LeadContext`` 对象 / ``{坐标}`` dict），工具都得认。"""
+    """会话 id 有两种上下文形状（``RunContext`` 对象 / ``{坐标}`` dict），工具都得认。"""
     _write(layout.root, "output", "a.md")
 
     sent: list = []

@@ -5,7 +5,7 @@
 写入可见的兜底文案。每次 run 有且仅有一次重试预算（before_agent 重置）。
 
 预算按**检查点坐标**分桶，桶键取自
-:func:`~evaharness.agents.middlewares.context.thread_bucket`（必须认得 dict 与带
+:func:`~evaharness.runtime.thread_bucket`（必须认得 dict 与带
 ``thread_id`` 的对象两种上下文形状，理由见那个模块）。
 """
 
@@ -25,7 +25,7 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 from langgraph.runtime import Runtime
 
-from evaharness.agents.middlewares.context import thread_bucket
+from evaharness.runtime import thread_bucket
 
 _RECOVERY_PROMPT = (
     "<system_reminder>\n"

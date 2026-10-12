@@ -27,10 +27,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.gateway.agents import AgentFactory
 from app.gateway.routers import chat
-from app.gateway.run_registry import RunRegistry
-from evaharness.agents.lead_agent import LEAD_LANE
-from evaharness.agents.options import RunOptions
 from evaharness.journal.stores import MemoryJournalStore
+from evaharness.runtime import DEFAULT_LANE, RunOptions, RunRegistry
 from evaharness.sandbox import SandboxLayout
 
 THREAD = "th-1"
@@ -178,7 +176,7 @@ async def test_the_default_route_uses_a_non_empty_lane():
         frames = await _post(client, "/chat/stream", "现在几点？")
 
     lanes = {data[1]["task_id"] for name, data in frames if name == "messages"}
-    assert lanes == {LEAD_LANE}
+    assert lanes == {DEFAULT_LANE}
 
 
 @pytest.mark.asyncio

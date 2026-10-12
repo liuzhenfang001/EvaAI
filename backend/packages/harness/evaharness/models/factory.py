@@ -13,9 +13,9 @@ from typing import Any
 
 from langchain.chat_models import BaseChatModel
 
-from evaharness.agents.options import RunOptions, ThinkingLevel
 from evaharness.config.app_config import AppConfig
 from evaharness.reflection import resolve_class
+from evaharness.runtime import RunOptions, ThinkingLevel
 
 # Profile metadata that must never reach the model constructor.
 _METADATA_FIELDS = frozenset({"use", "name"})
@@ -72,7 +72,7 @@ def create_chat_model(
     Args:
         app_config: Typed application configuration.
         name: Model profile name; defaults to the first configured profile.
-        options: Per-run knobs (:class:`~evaharness.agents.options.RunOptions`)。``None`` 表示
+        options: Per-run knobs (:class:`~evaharness.runtime.RunOptions`)。``None`` 表示
             「不带任何运行参数」——**行为与老调用方完全一致**。
         **kwargs: Per-call overrides layered over the configured profile.
             **别拿它传 ``timeout`` / ``http_client``**：那类参数参与 httpx 客户端缓存键，

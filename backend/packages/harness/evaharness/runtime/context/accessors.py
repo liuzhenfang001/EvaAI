@@ -3,8 +3,8 @@
 运行的上下文有两种形状：
 
 - **dict**：Plan-Exec 的任务执行单元传 ``{"thread_id": <坐标>}``（早期形状）；
-- **对象**：lead agent 与子 agent 传 :class:`~evaharness.agents.lead_agent.LeadContext`
-  ——它们要 ``session_id`` / ``run_id`` 供 ``task`` 工具派发，所以用带类型的上下文。
+- **对象**：主 agent 与子 agent 传 :class:`~evaharness.runtime.RunContext`——它们要
+  ``session_id`` / ``run_id`` 供 ``task`` 工具派发，所以用带类型的上下文。
 
 两个消费者：
 
@@ -17,6 +17,12 @@
 历史清掉（T8 实测过）。放在这里而不是各处各写一份：原先两处各有一份**一模一样的**
 实现，改一处忘一处就成了「一个中间件按坐标分桶、另一个按 default 分桶」这种最难查的
 不一致。
+
+.. note::
+   原住在 ``agents/middlewares/context.py``（T19 搬来 ``runtime/context/``，见 ADR-0024）。
+   它叫「middlewares」是历史——真正的消费者大半不是中间件，而是**工具**
+   （``sandbox`` / ``knowledge`` / ``present_files``）。名字把工具引向了 ``agents`` 包，
+   于是「写一个工具就得认识 agent 实现」，这正是本片要断掉的那条边。
 """
 
 from __future__ import annotations
@@ -25,6 +31,9 @@ import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+# 注意与 `langgraph.runtime.Runtime` 同名不同物：那是上游交给中间件/工具的运行期对象，
+# 本包是 EvaAI 自己的「一次运行」契约。绝对 import 下两者不冲突（DeerFlow 同样如此），
+# 但读到 `Runtime` 时先看清是从哪来的。
 from langgraph.runtime import Runtime
 
 if TYPE_CHECKING:

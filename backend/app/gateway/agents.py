@@ -39,10 +39,10 @@ from evaharness.agents.lead_agent import (
     make_subagent_graph,
     make_task_tool,
 )
-from evaharness.agents.options import RunOptions
 from evaharness.config.app_config import AppConfig
 from evaharness.knowledge import KNOWLEDGE_SEARCH_NAME
 from evaharness.models.factory import create_chat_model
+from evaharness.runtime import RunOptions
 from evaharness.sandbox import BASH_TOOL_NAME
 from evaharness.skills import Skill, render_skills_section
 
@@ -52,7 +52,7 @@ ModelFactory = Callable[[str | None, "RunOptions | None"], BaseChatModel]
 """模型构造接缝：吃 profile 名（``None`` = 主 profile）与这次运行的参数，返回模型实例。
 
 第二个参数是 ADR-0011 预留的那个位置——「每请求参数从哪来」现在有了契约
-（:class:`~evaharness.agents.options.RunOptions`）。**摘要模型传 ``None``**：压缩是内部辅助
+（:class:`~evaharness.runtime.RunOptions`）。**摘要模型传 ``None``**：压缩是内部辅助
 调用，不该继承用户这一轮选的思考档位。
 """
 
@@ -115,9 +115,7 @@ class AgentFactory:
         self._bash_section = BASH_SECTION if any(tool.name == BASH_TOOL_NAME for tool in tools) else ""
         # 知识库段同理：只有检索工具真的在表里时才拼。它顺带是「/knowledge 这个第五个只读目录
         # 到底存不存在」的告知——不拼的话模型不会知道该去那儿读全文。
-        self._knowledge_section = (
-            KNOWLEDGE_SECTION if any(tool.name == KNOWLEDGE_SEARCH_NAME for tool in tools) else ""
-        )
+        self._knowledge_section = KNOWLEDGE_SECTION if any(tool.name == KNOWLEDGE_SEARCH_NAME for tool in tools) else ""
         self._model_factory: ModelFactory = model_factory if model_factory is not None else self._create_model
 
     def _prompt(self, base: str) -> str:
@@ -131,9 +129,7 @@ class AgentFactory:
         顶破，加中间件会把前者顶破。拼进 `system_prompt` 两条都不动（system 那条只是变长）。
         """
         sections = [
-            section
-            for section in (self._skill_section, self._bash_section, self._knowledge_section)
-            if section
+            section for section in (self._skill_section, self._bash_section, self._knowledge_section) if section
         ]
         return "\n\n".join([base, *sections])
 

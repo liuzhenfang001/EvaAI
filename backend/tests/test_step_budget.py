@@ -51,11 +51,11 @@ def test_before_agent_resets_the_bucket():
 
 
 def test_lead_context_buckets_by_coordinate():
-    """主 Agent 传的是带类型的上下文（``LeadContext``），分桶得认坐标而不是兜底桶。"""
-    from evaharness.agents.lead_agent import LeadContext
+    """主 Agent 传的是带类型的上下文（``RunContext``），分桶得认坐标而不是兜底桶。"""
+    from evaharness.runtime import RunContext
 
     mw = StepBudgetMiddleware(max_steps=1)
-    rt = Runtime(context=LeadContext(session_id="s", thread_id="s:lead", run_id="r1"))
+    rt = Runtime(context=RunContext(session_id="s", thread_id="s:lead", run_id="r1"))
     mw.after_model(_state(_ai_with_tool()), rt)
 
     assert set(mw._steps) == {"s:lead"}, "必须按坐标分桶，不能是 default"

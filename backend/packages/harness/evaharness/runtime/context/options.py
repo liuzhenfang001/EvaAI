@@ -7,6 +7,10 @@ ADR-0011 把「每请求参数从哪来」明确留给了后续切片，并指�
 **什么该放这里、什么绝不能**：只放**只影响请求体**的东西。``timeout`` / ``http_client`` 这类
 参与 httpx 客户端缓存键的参数**不许进来**——每请求变会让连接池按请求泛滥（ADR-0011 的硬约束，
 ``AgentFactory`` 的 docstring 里也写着）。判断标准很简单：**它出现在请求的 JSON 里吗？**
+
+.. note::
+   原住在 ``agents/options.py``（T19 搬进 ``runtime/context/``，见 ADR-0024）。搬家的理由是
+   **依赖方向**：``models`` 只是要一个「思考档位」的枚举，却因此得认识整个 ``agents`` 包。
 """
 
 from __future__ import annotations

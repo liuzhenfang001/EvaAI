@@ -14,14 +14,6 @@ import json
 
 import pytest
 
-from evaharness.agents.events import (
-    MessagesEvent,
-    PlanEvent,
-    PlanTask,
-    SummaryEvent,
-    TaskEndEvent,
-    TaskStartEvent,
-)
 from evaharness.journal.compaction import (
     MessageCompactor,
     compact,
@@ -29,6 +21,14 @@ from evaharness.journal.compaction import (
     merge_key,
 )
 from evaharness.journal.stores import JournalEntry
+from evaharness.runtime import (
+    MessagesEvent,
+    PlanEvent,
+    PlanTask,
+    SummaryEvent,
+    TaskEndEvent,
+    TaskStartEvent,
+)
 
 
 class _Seq:

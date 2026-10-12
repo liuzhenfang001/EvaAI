@@ -6,7 +6,7 @@ import json
 import pytest
 
 from app.gateway.sse import format_sse, map_run_event, sse_consumer
-from evaharness.agents.events import (
+from evaharness.runtime import (
     MessagesEvent,
     PlanEvent,
     PlanTask,
@@ -191,7 +191,7 @@ async def test_sse_consumer_does_not_swallow_cancellation():
 async def test_closing_the_consumer_closes_the_upstream_generator():
     """`aclosing` 链：消费者被关掉时，上游生成器也必须被 `aclose`。
 
-    与 MCP 无关——它保的是 `run_lead_agent` **自己的收尾**：runner 的 `finally` 要取消内层 pump
+    与 MCP 无关——它保的是 `run_agent` **自己的收尾**：runner 的 `finally` 要取消内层 pump
     并注销 run，而那个 `finally` 只有上游被 `aclose` 时才会跑。`async for` 提前退出**不会**自动关
     上游生成器（Python 语义），所以 `sse_consumer` 与 `journaled` 各套了一层 `aclosing`。
 
@@ -202,9 +202,7 @@ async def test_closing_the_consumer_closes_the_upstream_generator():
     async def upstream():
         try:
             while True:
-                yield RunStartEvent(
-                    run_id="r", thread_id="t", request="hi", started_at="2026-10-10T10:00:00+00:00"
-                )
+                yield RunStartEvent(run_id="r", thread_id="t", request="hi", started_at="2026-10-10T10:00:00+00:00")
         finally:
             closed.append("upstream")
 

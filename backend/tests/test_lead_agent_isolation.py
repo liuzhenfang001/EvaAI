@@ -18,7 +18,8 @@ from fakes import StreamToolFake, collect
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from evaharness.agents.lead_agent import make_lead_agent, run_lead_agent
+from evaharness.agents.lead_agent import make_lead_agent
+from evaharness.runtime import run_agent
 
 _TOOL_NAME = "probe"
 
@@ -74,9 +75,7 @@ def _scripted_model() -> StreamToolFake:
 
 
 def _warned(model: StreamToolFake) -> bool:
-    return any(
-        getattr(message, "name", None) == "loop_warning" for call in model.calls for message in call
-    )
+    return any(getattr(message, "name", None) == "loop_warning" for call in model.calls for message in call)
 
 
 @pytest.mark.asyncio
@@ -92,8 +91,8 @@ async def test_two_runs_on_the_same_coordinate_keep_separate_ledgers():
     agents = [make_lead_agent(model, tools) for model in models]
 
     await asyncio.gather(
-        collect(run_lead_agent("探一下", agent=agents[0], thread_id="th-1")),
-        collect(run_lead_agent("探一下", agent=agents[1], thread_id="th-1")),
+        collect(run_agent("探一下", agent=agents[0], thread_id="th-1")),
+        collect(run_agent("探一下", agent=agents[1], thread_id="th-1")),
     )
 
     assert not any(_warned(model) for model in models), "一个 run 收到了另一个 run 累出来的循环警告"

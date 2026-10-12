@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from app.gateway.run_registry import RunRegistry
+from evaharness.runtime import RunRegistry
 
 
 async def _never() -> None:

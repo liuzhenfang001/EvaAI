@@ -20,9 +20,9 @@ from langchain_core.tools import tool
 from langgraph.config import var_child_runnable_config
 from langgraph.graph.state import CompiledStateGraph
 
-from evaharness.agents.lead_agent.agent import TASK_TOOL_NAME, LeadContext
-from evaharness.agents.messages import final_text
+from evaharness.agents.lead_agent.agent import TASK_TOOL_NAME
 from evaharness.checkpoint import subagent_thread_id
+from evaharness.runtime import RunContext, final_text
 
 TASK_TOOL_DESCRIPTION = (
     "Dispatch a subagent to finish one self-contained piece of work and return its "
@@ -54,7 +54,7 @@ def make_task_tool(subagent: CompiledStateGraph) -> Any:
     """
 
     @tool(TASK_TOOL_NAME, description=TASK_TOOL_DESCRIPTION)
-    async def task(prompt: str, runtime: ToolRuntime[LeadContext]) -> str:
+    async def task(prompt: str, runtime: ToolRuntime[RunContext]) -> str:
         """派发一个子 agent 独立完成一项工作，返回它的结论。"""
         context = runtime.context
         coordinate = subagent_thread_id(context.session_id, context.run_id, str(runtime.tool_call_id))
@@ -62,7 +62,7 @@ def make_task_tool(subagent: CompiledStateGraph) -> Any:
             subagent,
             {"messages": [HumanMessage(content=prompt)]},
             coordinate=coordinate,
-            context=LeadContext(
+            context=RunContext(
                 session_id=context.session_id,
                 thread_id=coordinate,
                 run_id=context.run_id,
@@ -80,7 +80,7 @@ async def _run_isolated(
     payload: Any,
     *,
     coordinate: str,
-    context: LeadContext,
+    context: RunContext,
 ) -> Any:
     """在**干净的配置**里跑子 agent，然后返回它的终态。
 

@@ -20,8 +20,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import tool
 
-from evaharness.agents.events import RunEvent
 from evaharness.config.app_config import AppConfig
+from evaharness.runtime import RunEvent
 
 
 def fake_app_config(**summarization: Any) -> AppConfig:
@@ -122,12 +122,10 @@ class RecordingFake(ToolCapableFake):
             yield chunk
 
 
-
 @tool
 def echo(text: str) -> str:
     """回显给定文本（占位工具，用于让 bind_tools 真正被调用）。"""
     return text
-
 
 
 async def collect(stream: AsyncIterator[RunEvent]) -> list[RunEvent]:

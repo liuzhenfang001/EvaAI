@@ -19,9 +19,10 @@ from langchain_core.messages import AIMessage
 
 from app.gateway.routers import threads
 from app.gateway.sse import sse_consumer
-from evaharness.agents.lead_agent import LEAD_LANE, make_lead_agent, run_lead_agent
+from evaharness.agents.lead_agent import make_lead_agent
 from evaharness.journal import RunJournal, journaled
 from evaharness.journal.stores import JsonlJournalStore, MemoryJournalStore
+from evaharness.runtime import DEFAULT_LANE, run_agent
 from evaharness.sandbox import SandboxLayout
 
 THREAD = "th-1"
@@ -59,7 +60,7 @@ async def _run(store, request: str, *, thread_id: str = THREAD, run_id: str = "r
     agent = make_lead_agent(model, [], system_prompt="你是助手")
 
     async def events():
-        async for event in run_lead_agent(request, agent=agent, thread_id=thread_id, run_id=run_id):
+        async for event in run_agent(request, agent=agent, thread_id=thread_id, run_id=run_id):
             yield event
 
     journal = RunJournal(store, thread_id)
@@ -382,4 +383,4 @@ async def test_jsonl_store_survives_a_fresh_client(tmp_path):
 
     assert threads_payload[0]["title"].startswith("重启前问的")
     assert [e["event"]["type"] for e in entries] == ["run_start", "messages", "run_end"]
-    assert _text_per_task([e["event"] for e in entries if e["event"]["type"] == "messages"]) == {LEAD_LANE: "甲"}
+    assert _text_per_task([e["event"] for e in entries if e["event"]["type"] == "messages"]) == {DEFAULT_LANE: "甲"}

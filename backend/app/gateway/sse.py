@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import Any
 
-from evaharness.agents.events import MessagesEvent, RunEvent
+from evaharness.runtime import MessagesEvent, RunEvent
 
 
 def format_sse(event: str, data: Any, *, event_id: str | None = None) -> str:

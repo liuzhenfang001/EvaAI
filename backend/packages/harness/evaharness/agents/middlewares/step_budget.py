@@ -6,7 +6,7 @@ loop_detection 只拦**重复调用同一个工具**的循环；一个 agent 每
 同一个手法（共用 :func:`~evaharness.agents.middlewares.forced_stop.strip_tool_calls`），
 **不新增**「stopped」终态，run 仍以 ``completed`` 结束。
 
-计数按**检查点坐标**分桶（:func:`~evaharness.agents.middlewares.context.thread_bucket`），
+计数按**检查点坐标**分桶（:func:`~evaharness.runtime.thread_bucket`），
 ``before_agent`` 重置，理由与 loop_detection 相同：坐标跨轮复用，「步数上限」是一次
 运行内的概念，不是跨轮的。
 """
@@ -19,8 +19,8 @@ from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
 from langgraph.runtime import Runtime
 
-from evaharness.agents.middlewares.context import thread_bucket
 from evaharness.agents.middlewares.forced_stop import strip_tool_calls
+from evaharness.runtime import thread_bucket
 
 logger = logging.getLogger(__name__)
 

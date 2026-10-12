@@ -10,7 +10,7 @@ import subprocess
 import pytest
 from tool_fakes import COORDINATE_CONTEXT, WORKSPACE_CONTEXT, fake_runtime, lead_context
 
-from evaharness.agents.middlewares.context import sandbox_layout, session_id
+from evaharness.runtime import sandbox_layout, session_id
 from evaharness.sandbox import DEFAULT_MOUNTS, Mount, PathNotAllowedError, Sandbox, SandboxLayout
 
 
@@ -61,7 +61,11 @@ def test_skills_is_global_while_the_others_are_per_session(tmp_path):
 
 def test_every_mount_is_reachable(box):
     assert {mount.virtual for mount in DEFAULT_MOUNTS} == {
-        "/input", "/output", "/workspace", "/skills", "/knowledge",
+        "/input",
+        "/output",
+        "/workspace",
+        "/skills",
+        "/knowledge",
     }
 
 

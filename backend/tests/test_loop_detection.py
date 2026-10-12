@@ -124,15 +124,15 @@ def test_before_agent_leaves_other_threads_alone():
 
 
 def test_lead_context_buckets_by_coordinate_not_the_fallback():
-    """主 Agent 传的是**带类型的上下文**（``LeadContext``），不是 dict。
+    """主 Agent 传的是**带类型的上下文**（``RunContext``），不是 dict。
 
     只认 dict 的实现会落进 ``"default"`` 兜底桶——所有会话、所有子 agent 共用一本账。
     T8 之前没暴露，是因为那时只有 Plan-Exec 一种路径、而它传的正好是 dict。
     """
-    from evaharness.agents.lead_agent import LeadContext
+    from evaharness.runtime import RunContext
 
     mw = LoopDetectionMiddleware()
-    rt = Runtime(context=LeadContext(session_id="s", thread_id="s:lead", run_id="r1"))
+    rt = Runtime(context=RunContext(session_id="s", thread_id="s:lead", run_id="r1"))
     mw.after_model(_state(), rt)
 
     assert set(mw._history) == {"s:lead"}, "必须按坐标分桶，不能是 default"
@@ -144,11 +144,11 @@ def test_two_coordinates_do_not_share_a_ledger():
     并发跑两个会话时（或者主 Agent 派了子 agent 时），共用一个桶意味着一个会话的工具
     调用会算到另一个头上。这条在「按坐标分桶」被破坏时必然失败。
     """
-    from evaharness.agents.lead_agent import LeadContext
+    from evaharness.runtime import RunContext
 
     mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
-    first = Runtime(context=LeadContext(session_id="s", thread_id="s:lead", run_id="r1"))
-    second = Runtime(context=LeadContext(session_id="t", thread_id="t:lead", run_id="r1"))
+    first = Runtime(context=RunContext(session_id="s", thread_id="s:lead", run_id="r1"))
+    second = Runtime(context=RunContext(session_id="t", thread_id="t:lead", run_id="r1"))
 
     for _ in range(3):
         mw.after_model(_state(), first)
@@ -162,11 +162,11 @@ def test_a_subagent_does_not_reset_the_parent_ledger():
     共用兜底桶时，主 Agent 派一次子 agent 就会把它正在累积的循环检测历史清空——
     循环检测因此被静默地缴械。
     """
-    from evaharness.agents.lead_agent import LeadContext
+    from evaharness.runtime import RunContext
 
     mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
-    parent = Runtime(context=LeadContext(session_id="s", thread_id="s:lead", run_id="r1"))
-    child = Runtime(context=LeadContext(session_id="s", thread_id="s:r1:sub:c1", run_id="r1"))
+    parent = Runtime(context=RunContext(session_id="s", thread_id="s:lead", run_id="r1"))
+    child = Runtime(context=RunContext(session_id="s", thread_id="s:r1:sub:c1", run_id="r1"))
 
     for _ in range(2):
         mw.after_model(_state(), parent)

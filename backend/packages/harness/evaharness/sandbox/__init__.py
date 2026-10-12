@@ -12,7 +12,7 @@
 
 **这一层不含任何全局**：宿主根与挂载表由调用方构造一次
 :class:`~evaharness.sandbox.paths.SandboxLayout`，经**运行上下文**注入（工具侧用
-:func:`evaharness.agents.middlewares.context.sandbox_layout` 取）。所以「同一个框架、不同的
+:func:`evaharness.runtime.sandbox_layout` 取）。所以「同一个框架、不同的
 部署」在这里只是换一个 layout——这也是它与参照项目最关键的一处分歧（那边用进程级 provider 单例）。
 """
 

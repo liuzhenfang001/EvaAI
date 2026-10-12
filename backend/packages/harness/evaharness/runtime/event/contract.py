@@ -1,16 +1,17 @@
 """RunEvent：一次运行的对外事件流。
 
-这是主 Agent 路径的**唯一输出通道**，也是 SSE 层与 RunJournal 共同的输入。事件全部 JSON
+这是 agent 路径的**唯一输出通道**，也是 SSE 层与 RunJournal 共同的输入。事件全部 JSON
 可序列化（不放 LangChain 对象），因此 SSE 映射是一行透传，RunJournal 可以直接落盘。
 
 .. note::
-   本模块原先住在 ``agents/plan_exec/events.py``——那份契约是两条路径共用的，而 Plan-Exec
-   从 T8 起就不再是默认路径。T16 下线 Plan-Exec 时把它搬到了现在这个位置（ADR-0021），
-   顺手还掉 ADR-0010 记的那笔债。
+   本模块的搬家史：``agents/plan_exec/events.py`` → ``agents/events.py``（T16 下线 Plan-Exec
+   时，见 ADR-0021）→ ``runtime/event/contract.py``（T19 见 ADR-0024）。最后一次搬家的理由是
+   **依赖方向**：``journal`` 只是想在事件流上挂个 tee、``sse`` 只是想把事件翻成帧，两个都
+   不该因此认识 ``agents`` 包。
 
-   ``PlanEvent`` / ``ReplanEvent`` / ``TaskStartEvent`` **保留**，但它们已是**只读的遗留契约**：
-   新运行不再产生，只为**解析老 journal** 而存在（``RunEvent`` 是判别联合，缺一个成员就会让
-   含那种事件的历史行一读就抛）。改它们之前先想清楚「老数据还能不能回放」。
+   ``PlanEvent`` / ``ReplanEvent`` / ``TaskStartEvent`` / ``SummaryEvent`` **保留**，但它们已是
+   **只读的遗留契约**：新运行不再产生，只为**解析老 journal** 而存在（``RunEvent`` 是判别联合，
+   缺一个成员就会让含那种事件的历史行一读就抛）。改它们之前先想清楚「老数据还能不能回放」。
 
 刻意**没有 ``error`` 变体**：任务级失败走 ``TaskEndEvent(status="failed")``
 （best-effort），致命异常直接向上抛、由 SSE 层兜成 error 帧——避免两条错误通道
@@ -34,7 +35,20 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from evaharness.agents.options import ThinkingLevel
+from evaharness.runtime.context.options import ThinkingLevel
+
+DEFAULT_LANE = "main"
+"""不带泳道的运行在事件流里用的默认泳道 id。
+
+**不能是空串**：前端 ``ensureBubble`` 对空 ``task_id`` 直接 no-op，正文与工具调用行
+会被静默丢弃（见 ``runState.ts``）。它与已下线的 Plan-Exec 产生的 ``t1`` / ``t2`` 不会撞
+——后者的提示词就要求按 ``t1, t2, t3...`` 命名。
+
+.. note::
+   原名 ``LEAD_LANE``、住在 ``agents/lead_agent/agent.py``。T19 改名并搬来这里
+   （见 ADR-0024）：它是**事件流**的概念（谁在往这条事件上署名），而不是「lead agent」
+   的属性——:func:`~evaharness.runtime.run_agent` 现在把它当参数收，默认值就是它。
+"""
 
 EventCategory = Literal["message", "trace"]
 """事件路由桶。取值见模块 docstring。"""
@@ -89,8 +103,8 @@ class RunStartEvent(_MessageEvent):
     历史里「用户说了什么」的唯一来源——用户请求不是 RunEvent，所以在此之前 journal
     里根本没有它（ADR-0008 记下的缺口，ADR-0009 补上）。
 
-    在调用 planner **之前**就产出：客户端因此能立刻拿到 thread_id 与用户气泡，
-    而 planner 失败时这次运行也留得下痕迹。
+    在调用模型**之前**就产出：客户端因此能立刻拿到 thread_id 与用户气泡，
+    而模型失败时这次运行也留得下痕迹。
     """
 
     type: Literal["run_start"] = "run_start"
@@ -117,7 +131,7 @@ class RunStartEvent(_MessageEvent):
 
 
 class MessagesEvent(_MessageEvent):
-    """ReAct 执行单元的 token 增量。
+    """模型这一轮的 token 增量。
 
     沿用 T1 的线上形状：SSE 帧的 data 为 ``[chunk, metadata]``（``task_id`` 由 SSE
     层并进 ``metadata``，所以线上形状一字未改）。
@@ -186,8 +200,8 @@ class PresentedFile(BaseModel):
     """一个交付给用户的文件。
 
     ``path`` 是**虚拟路径口径**（``/output/report.md``）——宿主路径永远不进事件、不进模型
-    上下文、更不出前端（见 ``app/tools/sandbox.py`` 的模块说明）。``name`` 单独给一份而不是
-    让前端再切一次路径：展示用的东西不该由消费者各自解析一遍。
+    上下文、更不出前端（见 :mod:`evaharness.sandbox.paths` 的模块说明）。``name`` 单独给一份
+    而不是让前端再切一次路径：展示用的东西不该由消费者各自解析一遍。
     """
 
     path: str
@@ -202,10 +216,11 @@ class FilesPresentedEvent(_MessageEvent):
     归 ``message`` 桶：它是「这一轮产出了什么」的对话内容，卡片要出现在聊天区——语义与
     :class:`TaskEndEvent` 一致（产出与成败归 message），**不是**编排过程。
 
-    ``task_id`` 由 runner 填（见 :func:`~evaharness.agents.lead_agent.runner.run_lead_agent`），
-    不由产出这个事件的工具填：泳道是 runner 的职责（``messages`` 事件也是它硬编码
-    ``LEAD_LANE``），而且 ``events`` 这个模块 import ``LEAD_LANE`` 会与
-    :mod:`~evaharness.agents.lead_agent.agent` 循环依赖。
+    ``task_id`` 由运行入口填（见 :func:`~evaharness.runtime.run_agent`）——泳道是它的职责
+    （``messages`` 事件也是它按 ``lane`` 参数署名），不由产出这个事件的工具填：工具不知道
+    自己在哪条泳道上。
+
+    它与工具之间的载荷契约在 :mod:`evaharness.runtime.event.custom`。
 
     **刻意不带 ``download_url``**：URL 的形状是网关层的路由细节，harness 的契约不该知道
     HTTP 长什么样。前端拿 ``threadId`` + ``path`` 自己拼。
@@ -219,7 +234,7 @@ class FilesPresentedEvent(_MessageEvent):
 class RunEndEvent(_MessageEvent):
     """一次运行的收尾事件，与 :class:`RunStartEvent` 对称（T8）。
 
-    lead agent 路径**没有** ``task_end``——它不拆任务——所以 message 桶里到它为止就
+    agent 路径**没有** ``task_end``——它不拆任务——所以 message 桶里到它为止就
     再也没有一个终态事件，而「助手这一轮说完了」正是对话要显示的东西。
 
     它同时是 **journal 的提交点**：``RunJournal`` 按条目数计的阈值在归并之后很少触发，
@@ -266,6 +281,7 @@ RunEventAdapter: TypeAdapter[RunEvent] = TypeAdapter(RunEvent)
 
 
 __all__ = [
+    "DEFAULT_LANE",
     "EventCategory",
     "FilesPresentedEvent",
     "MessagesEvent",

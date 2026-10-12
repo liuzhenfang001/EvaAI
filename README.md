@@ -9,13 +9,16 @@
 ```
 backend/
 ├── packages/harness/evaharness/   # 框架层（业务无关，可插拔机制）
-│   ├── agents/lead_agent/         # ★ 主 Agent：ReAct 图 + 事件流 + 子 agent 派发
+│   ├── runtime/                   # ★ 契约中枢：事件契约 / 运行上下文 / 运行入口与取消（ADR-0024）
+│   │   ├── event/                 #   RunEvent 契约 + 工具载荷 + 图流翻译
+│   │   ├── context/               #   RunContext + 访问器 + 每请求旋钮
+│   │   └── runs/                  #   run_agent + pump + 取消 + 终态读取
+│   ├── agents/                    # agent 层：主 Agent 的 ReAct 图 + 子 agent 派发 + 治理中间件
 │   ├── sandbox/                   # 虚拟路径沙箱 + docker 沙箱 + 文件工具 + bash（ADR-0020）
-│   ├── knowledge/                 # RAG 知识库机制：切分 / sqlite-vec 存储 / 索引器 / 检索工具（ADR-0022）
+│   ├── knowledge/                 # RAG 知识库机制：切分 / 向量存储 / 索引器 / 检索工具（ADR-0022）
 │   ├── fingerprint/               # 目录指纹与变更检测（只回答「变了没、变哪些」）
 │   ├── checkpoint/                # checkpoint 持久化（SQLite）与保留策略
-│   ├── journal/                   # RunJournal + 可插拔 store（内存 / JSONL）
-│   └── agents/                    # 事件契约 + 治理中间件
+│   └── journal/                   # RunJournal + 可插拔 store（内存 / JSONL）
 ├── app/                           # 业务层（助手人设、具体工具/技能）
 │   ├── gateway/                   # FastAPI + SSE + 每请求建图的 AgentFactory
 │   └── tools/                     # 工具注册表 + 沙箱布局 + 交付/联网工具

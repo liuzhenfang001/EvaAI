@@ -13,7 +13,6 @@ T8 起 EvaAI 的路径是一个 **ReAct 主 Agent**，不再是 Plan-Exec 编排
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents import create_agent
@@ -23,15 +22,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from evaharness.agents.middlewares import StepBudgetMiddleware, build_default_middlewares
 from evaharness.config.app_config import SummarizationConfig
-from evaharness.sandbox.paths import SandboxLayout
-
-LEAD_LANE = "main"
-"""lead agent 在事件流里的泳道 id。
-
-**不能是空串**：前端 ``ensureBubble`` 对空 ``task_id`` 直接 no-op，正文与工具调用行
-会被静默丢弃（见 ``runState.ts``）。它与 planner 产生的 ``t1`` / ``t2`` 不会撞——
-后者的提示词就要求按 ``t1, t2, t3...`` 命名。
-"""
+from evaharness.runtime import RunContext
 
 TASK_TOOL_NAME = "task"
 """派发子 agent 的工具名。子 agent 图里出现它就是递归，:func:`make_subagent_graph` 会拦。"""
@@ -52,36 +43,6 @@ DEFAULT_SUBAGENT_PROMPT = (
     "Your reply is handed back verbatim to the agent that dispatched you, so report the "
     "concrete result and skip pleasantries."
 )
-
-
-@dataclass
-class LeadContext:
-    """图运行期的上下文：中间件与工具靠它拿到「此刻是哪次运行」。
-
-    **会话与 checkpoint 坐标是两个不同的东西**，这里刻意分成两个字段——把它们混成
-    一个（T7 之前反复踩过）会导致「检查点写在 A、循环检测记在 B」这类难查的症状：
-
-    - ``session_id``：用户眼里的一段对话（``th-1``）。
-    - ``thread_id``：**实际传给 checkpointer 的坐标**（``th-1:lead``）。它必须叫这个名字、
-      且必须就是坐标本身——``LoopDetectionMiddleware`` 与 ``TerminalResponseMiddleware``
-      读的都是 ``context["thread_id"]``，并按它分桶。
-    - ``run_id``：本轮运行的标识。
-
-    子 agent 的图复用同一个类型，只是 ``thread_id`` 换成它自己的运行级坐标、
-    ``session_id`` 仍是同一个会话：派发出来的子 agent 属于**会话**，不属于主 Agent
-    那个 checkpoint thread。
-
-    第四个字段 ``sandbox`` 是**部署策略**（宿主根 + 挂载表），见
-    :class:`~evaharness.sandbox.paths.SandboxLayout`。它**有默认值**：不碰文件的图（中间的
-    中间件、纯推理的测试）不必构造它，而用了文件工具却没注入布局的运行会**响亮地失败**
-    （:func:`~evaharness.agents.middlewares.context.sandbox_layout` 取不到就抛），
-    不是悄悄写进某个猜出来的目录。
-    """
-
-    session_id: str
-    thread_id: str
-    run_id: str
-    sandbox: SandboxLayout | None = None
 
 
 def build_lead_middlewares(
@@ -131,15 +92,15 @@ def make_lead_agent(
     ``middleware=None`` 用 EvaAI 默认链（**不含**摘要——摘要要显式给
     :class:`SummarizationConfig`，因为它会额外花一次 LLM 调用）。
 
-    ``context_schema`` 固定为 :class:`LeadContext`，不接受覆盖：子 agent 派发工具靠它
-    取运行身份，换成别的类型会在派发那一刻才炸。
+    ``context_schema`` 固定为 :class:`~evaharness.runtime.RunContext`，不接受覆盖：子 agent
+    派发工具靠它取运行身份，换成别的类型会在派发那一刻才炸。
     """
     return create_agent(
         model=model,
         tools=list(tools) if tools else [],
         system_prompt=system_prompt or DEFAULT_LEAD_PROMPT,
         middleware=list(middleware) if middleware is not None else build_default_middlewares(),
-        context_schema=LeadContext,
+        context_schema=RunContext,
         checkpointer=checkpointer,
         **kwargs,
     )
@@ -173,7 +134,7 @@ def make_subagent_graph(
         tools=list(tools) if tools else [],
         system_prompt=system_prompt or DEFAULT_SUBAGENT_PROMPT,
         middleware=list(middleware) if middleware is not None else build_default_middlewares(),
-        context_schema=LeadContext,
+        context_schema=RunContext,
         checkpointer=checkpointer,
         **kwargs,
     )
@@ -182,9 +143,7 @@ def make_subagent_graph(
 __all__ = [
     "DEFAULT_LEAD_PROMPT",
     "DEFAULT_SUBAGENT_PROMPT",
-    "LEAD_LANE",
     "TASK_TOOL_NAME",
-    "LeadContext",
     "build_lead_middlewares",
     "make_lead_agent",
     "make_subagent_graph",

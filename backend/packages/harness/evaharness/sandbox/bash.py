@@ -24,7 +24,7 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
-from evaharness.agents.middlewares.context import sandbox_layout, session_id
+from evaharness.runtime import sandbox_layout, session_id
 from evaharness.sandbox.docker import Completed, SandboxSpec, check_docker_ready, run_command
 from evaharness.sandbox.paths import SandboxLayout
 

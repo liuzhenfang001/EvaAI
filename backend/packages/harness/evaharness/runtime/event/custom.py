@@ -1,0 +1,42 @@
+"""工具通过 langgraph 的 custom 流把消息送进事件流时用的载荷契约。
+
+**为什么工具不直接构造 RunEvent**：工具不知道自己在哪条泳道上（那是运行入口的职责——
+:func:`~evaharness.runtime.run_agent` 按 ``lane`` 参数补上）。所以分工是——工具 emit 一个
+**载荷**，运行入口认它、补上泳道、构造并校验成 ``RunEvent``。``RunEvent`` 仍是唯一输出
+契约，工具只是多了一个生产者（ADR-0006 的「一个产出两个消费」不变）。
+
+**为什么单独一个模块**：它是 harness 与 app 的**共用边界**——生产者在 app（业务工具要
+``Sandbox`` 才能分辨交付物），消费者在 harness（``runtime``）。放 ``contract.py`` 里会把
+「工具契约」与「事件契约」两个变化频率不同的东西焊在一起；放消费者那边，app 就得 import
+运行入口才能 emit。（原先还有一层理由——``contract.py`` import 泳道常量会成环；T19 把两者
+收进同一个包之后这条理由消失了，但边界本身还在，所以模块划分不变。）
+
+机制上，工具写进 :attr:`~langchain.tools.ToolRuntime.stream_writer` 的载荷会经 langgraph 的
+``stream_mode="custom"`` 流出，由 :mod:`evaharness.runtime.event.translate` 映射成事件。
+注意这条通道**只在主 Agent 路径上通**：子 agent 走 ``ainvoke``、没有 custom 模式，
+``stream_writer`` 是 no-op——写进去的东西会**静默消失，不抛异常**（见 ADR-0015）。
+
+.. note::
+   原住在 ``agents/lead_agent/custom_events.py``（T19 搬来，见 ADR-0024）。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+PRESENT_FILES_KIND = "files_presented"
+"""载荷的判别键。取值与 :class:`~evaharness.runtime.event.contract.FilesPresentedEvent`
+的 ``type`` 相同——同一条事件在链路上的两个阶段用同一个名字，少一处对不上的地方。"""
+
+
+def present_files_payload(files: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """打包一个「展示这些文件」的载荷。
+
+    只描述**展示什么**：不含泳道、不含 ``RunEvent`` 的形状。载荷全部是 JSON 原语，所以
+    SSE 与 RunJournal 都能直接吃。
+    """
+    return {"kind": PRESENT_FILES_KIND, "files": [dict(file) for file in files]}
+
+
+__all__ = ["PRESENT_FILES_KIND", "present_files_payload"]

@@ -15,14 +15,13 @@ from langgraph.config import var_child_runnable_config
 
 from evaharness.agents.lead_agent import (
     TASK_TOOL_NAME,
-    LeadContext,
     make_lead_agent,
     make_subagent_graph,
     make_task_tool,
-    run_lead_agent,
 )
 from evaharness.agents.lead_agent.subagent import NO_OUTPUT_PLACEHOLDER, _run_isolated
 from evaharness.checkpoint import subagent_thread_id
+from evaharness.runtime import RunContext, run_agent
 
 
 @dataclass
@@ -63,7 +62,7 @@ async def _threads(saver: InMemorySaver) -> set[str]:
 
 
 async def _run(harness: Harness, text: str, *, run_id: str = "r1", thread_id: str = "th-1"):
-    return await collect(run_lead_agent(text, agent=harness.lead, run_id=run_id, thread_id=thread_id))
+    return await collect(run_agent(text, agent=harness.lead, run_id=run_id, thread_id=thread_id))
 
 
 @pytest.mark.asyncio
@@ -170,7 +169,7 @@ async def test_the_subagent_runs_with_a_clean_config():
             assert config == {"configurable": {"thread_id": "th-1:r1:sub:c1"}}
             return {"messages": []}
 
-    await _run_isolated(Stub(), {}, coordinate="th-1:r1:sub:c1", context=LeadContext("th-1", "th-1:lead", "r1"))
+    await _run_isolated(Stub(), {}, coordinate="th-1:r1:sub:c1", context=RunContext("th-1", "th-1:lead", "r1"))
 
 
 @pytest.mark.asyncio
@@ -188,7 +187,7 @@ async def test_the_clean_config_does_not_leak_into_the_caller():
     marker = {"configurable": {"thread_id": "sentinel"}}
     token = var_child_runnable_config.set(marker)
     try:
-        await _run_isolated(Stub(), {}, coordinate="c", context=LeadContext("s", "c", "r"))
+        await _run_isolated(Stub(), {}, coordinate="c", context=RunContext("s", "c", "r"))
         assert var_child_runnable_config.get() is marker
     finally:
         var_child_runnable_config.reset(token)

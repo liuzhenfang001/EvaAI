@@ -24,8 +24,8 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from evaharness.agents.events import MessagesEvent, RunEvent
 from evaharness.journal.stores import JournalEntry
+from evaharness.runtime import MessagesEvent, RunEvent
 
 MergeKey = tuple[str, str]
 

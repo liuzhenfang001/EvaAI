@@ -22,9 +22,9 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 
-from evaharness.agents.events import RunEndEvent, RunEvent, TaskEndEvent
 from evaharness.journal.compaction import MessageCompactor
 from evaharness.journal.stores import JournalEntry, JournalStore
+from evaharness.runtime import RunEndEvent, RunEvent, TaskEndEvent
 
 logger = logging.getLogger(__name__)
 

@@ -16,20 +16,22 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
-from evaharness.agents.events import RunEvent
 from evaharness.agents.lead_agent import (
     DEFAULT_LEAD_PROMPT,
-    LEAD_LANE,
     TASK_TOOL_NAME,
-    RunCancellation,
     build_lead_middlewares,
     make_lead_agent,
     make_subagent_graph,
-    present_files_payload,
-    run_lead_agent,
 )
 from evaharness.agents.middlewares import StepBudgetMiddleware, build_default_middlewares
 from evaharness.config.app_config import SummarizationConfig
+from evaharness.runtime import (
+    DEFAULT_LANE,
+    RunCancellation,
+    RunEvent,
+    present_files_payload,
+    run_agent,
+)
 
 
 def _model(*answers: str) -> ToolCapableFake:
@@ -38,9 +40,6 @@ def _model(*answers: str) -> ToolCapableFake:
 
 def _agent(*answers: str, tools=None, saver: bool = False) -> CompiledStateGraph:
     return make_lead_agent(_model(*answers), tools, checkpointer=InMemorySaver() if saver else None)
-
-
-
 
 
 # --------------------------------------------------------------------------- #
@@ -79,9 +78,7 @@ def test_the_task_tool_is_advertised_in_the_default_prompt():
 def test_summarization_is_off_by_default():
     """摘要会额外花一次 LLM 调用，不能悄悄挂上。步数预算始终在链上（主 Agent 专属）。"""
     chain = build_lead_middlewares(_model("x"))
-    assert [type(m) for m in chain] == [type(m) for m in build_default_middlewares()] + [
-        StepBudgetMiddleware
-    ]
+    assert [type(m) for m in chain] == [type(m) for m in build_default_middlewares()] + [StepBudgetMiddleware]
 
 
 def test_summarization_is_appended_innermost():
@@ -97,9 +94,7 @@ def test_disabled_summarization_keeps_the_default_chain():
     config = SummarizationConfig(enabled=False)
     chain = build_lead_middlewares(_model("x"), summarization=config)
 
-    assert [type(m) for m in chain] == [type(m) for m in build_default_middlewares()] + [
-        StepBudgetMiddleware
-    ]
+    assert [type(m) for m in chain] == [type(m) for m in build_default_middlewares()] + [StepBudgetMiddleware]
 
 
 def test_subagent_graph_rejects_the_task_tool():
@@ -125,7 +120,7 @@ def test_subagent_graph_accepts_business_tools():
 
 @pytest.mark.asyncio
 async def test_run_start_is_first_and_carries_react_mode():
-    events = await collect(run_lead_agent("现在几点？", agent=_agent("现在 18:04"), run_id="r1", thread_id="th1"))
+    events = await collect(run_agent("现在几点？", agent=_agent("现在 18:04"), run_id="r1", thread_id="th1"))
 
     assert events[0].type == "run_start"
     assert events[0].mode == "react"
@@ -136,7 +131,7 @@ async def test_run_start_is_first_and_carries_react_mode():
 
 @pytest.mark.asyncio
 async def test_ids_are_generated_when_omitted():
-    events = await collect(run_lead_agent("你好", agent=_agent("你好呀")))
+    events = await collect(run_agent("你好", agent=_agent("你好呀")))
 
     assert events[0].run_id
     assert events[0].thread_id
@@ -149,18 +144,18 @@ async def test_text_flows_through_under_a_non_empty_lane():
     前端 ``ensureBubble`` 对空 ``task_id`` 直接 no-op——正文与工具调用行会被静默丢弃，
     界面上表现为「发了消息什么也没回」。
     """
-    events = await collect(run_lead_agent("现在几点？", agent=_agent("现在 18:04")))
+    events = await collect(run_agent("现在几点？", agent=_agent("现在 18:04")))
 
     chunks = [e for e in events if e.type == "messages"]
     assert chunks, "应当有 token 增量"
-    assert {e.task_id for e in chunks} == {LEAD_LANE}
-    assert LEAD_LANE, "泳道 id 不能为空"
+    assert {e.task_id for e in chunks} == {DEFAULT_LANE}
+    assert DEFAULT_LANE, "泳道 id 不能为空"
     assert "".join(e.chunk["content"] for e in chunks) == "现在 18:04"
 
 
 @pytest.mark.asyncio
 async def test_run_end_is_last_and_carries_the_final_text():
-    events = await collect(run_lead_agent("现在几点？", agent=_agent("现在 18:04")))
+    events = await collect(run_agent("现在几点？", agent=_agent("现在 18:04")))
 
     assert events[-1].type == "run_end"
     assert events[-1].status == "completed"
@@ -170,7 +165,7 @@ async def test_run_end_is_last_and_carries_the_final_text():
 @pytest.mark.asyncio
 async def test_blank_reply_is_not_a_failure():
     """空白回复照常 completed，只是没有可见产物——与执行单元的立场一致。"""
-    events = await collect(run_lead_agent("你好", agent=_agent("   ")))
+    events = await collect(run_agent("你好", agent=_agent("   ")))
 
     assert events[-1].type == "run_end"
     assert events[-1].status == "completed"
@@ -186,7 +181,7 @@ async def test_graph_level_failure_becomes_a_failed_run_end():
             raise RuntimeError("checkpoint store down")
 
     agent = make_lead_agent(_model("答案"), [], checkpointer=ExplodingSaver())
-    events = await collect(run_lead_agent("你好", agent=agent))
+    events = await collect(run_agent("你好", agent=agent))
 
     assert events[0].type == "run_start"
     assert events[-1].type == "run_end"
@@ -219,7 +214,7 @@ async def test_cancellation_passes_through_without_a_run_end():
     seen: list[str] = []
 
     async def consume() -> None:
-        async for event in run_lead_agent("你好", agent=agent):
+        async for event in run_agent("你好", agent=agent):
             seen.append(event.type)
 
     task = asyncio.create_task(consume())
@@ -265,7 +260,7 @@ async def test_active_cancel_emits_a_cancelled_run_end():
     seen: list[RunEvent] = []
 
     async def consume() -> None:
-        async for event in run_lead_agent("你好", agent=agent, cancellation=cancellation):
+        async for event in run_agent("你好", agent=agent, cancellation=cancellation):
             seen.append(event)
 
     task = asyncio.create_task(consume())
@@ -311,7 +306,7 @@ async def _events_for_payload(payload: Any) -> list[RunEvent]:
         )
     )
     agent = make_lead_agent(model, [_emitting_tool(payload)], checkpointer=InMemorySaver())
-    return await collect(run_lead_agent("做点什么", agent=agent, thread_id="th-1"))
+    return await collect(run_agent("做点什么", agent=agent, thread_id="th-1"))
 
 
 @pytest.mark.asyncio
@@ -326,7 +321,7 @@ async def test_a_tool_payload_becomes_a_files_presented_event():
 
     presented = [e for e in events if e.type == "files_presented"]
     assert len(presented) == 1, "一次工具调用产一条事件"
-    assert presented[0].task_id == LEAD_LANE, "泳道由 runner 填，不由工具填"
+    assert presented[0].task_id == DEFAULT_LANE, "泳道由 runner 填，不由工具填"
     assert presented[0].files[0].path == "/output/a.md"
     assert presented[0].files[0].size == 12
 

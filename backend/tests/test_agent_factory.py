@@ -19,9 +19,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
 from app.gateway.agents import AgentFactory
-from evaharness.agents.lead_agent import TASK_TOOL_NAME, run_lead_agent
+from evaharness.agents.lead_agent import TASK_TOOL_NAME
 from evaharness.agents.middlewares import build_default_middlewares
-from evaharness.agents.options import RunOptions
+from evaharness.runtime import RunOptions, run_agent
 
 ModelFactory = Callable[[str | None], ToolCapableFake]
 
@@ -194,9 +194,7 @@ def test_no_options_still_calls_the_factory_with_none():
 def test_the_summary_model_does_not_inherit_the_run_options():
     """压缩是内部辅助调用，不该跟着用户这轮选的思考档位跑——否则每次压上下文都变成一次昂贵思考。"""
     seen: list[RunOptions | None] = []
-    factory = _factory(
-        enabled=True, model="cheap", model_factory=_answering("好的。", options=seen)
-    )
+    factory = _factory(enabled=True, model="cheap", model_factory=_answering("好的。", options=seen))
 
     factory.lead(RunOptions(thinking="max"))
 
@@ -219,8 +217,8 @@ async def test_memory_survives_a_rebuild():
     recorder = CallRecordingFake(messages=iter([AIMessage(content="好的，张三。"), AIMessage(content="你叫张三。")]))
     factory = _factory(checkpointer=saver, model_factory=lambda _name, _options=None: recorder)
 
-    await collect(run_lead_agent("我叫张三", agent=factory.lead(), thread_id="th-1"))
-    await collect(run_lead_agent("我叫什么", agent=factory.lead(), thread_id="th-1"))
+    await collect(run_agent("我叫张三", agent=factory.lead(), thread_id="th-1"))
+    await collect(run_agent("我叫什么", agent=factory.lead(), thread_id="th-1"))
 
     second_turn = recorder.calls[-1]
     humans = [str(m.content) for m in second_turn if isinstance(m, HumanMessage)]

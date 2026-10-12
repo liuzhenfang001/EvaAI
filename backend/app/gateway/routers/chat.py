@@ -2,7 +2,7 @@
 
 只有一条路径：``/chat/stream`` 跑 **ReAct 主 Agent**（T8 起的默认路径）。
 曾经的 ``/chat/plan/stream``（Plan-Exec 封存路径）在 T16 下线了，见 ADR-0021——
-它的**事件类型**还留在 :mod:`evaharness.agents.events` 里，只为解析老 journal。
+它的**事件类型**还留在 :mod:`evaharness.runtime` 里，只为解析老 journal。
 
 这条路由在**请求路径上现建图**（`state.agent_factory`，见 ADR-0011），而不是共享
 lifespan 建好的那一张：中间件的追踪状态因此不跨请求。
@@ -18,7 +18,7 @@ T13 一度把建图挪进了一个「一次运行」的异步生成器——那�
 那些该在流开始之前就给出 HTTP 状态码。
 
 **上游生成器仍然关得干净**：`sse_consumer` 用 `aclosing` 关 `journaled`、`journaled` 用 `aclosing`
-关 `run_lead_agent`——两层链一路到 runner 的 `finally`（取消 pump + 注销 run）。客户端断开时
+关 `run_agent`——两层链一路到运行入口的 `finally`（取消 pump + 注销 run）。客户端断开时
 `CancelledError` 从最深处穿透，链子照样收尾。
 """
 
@@ -32,10 +32,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.gateway.sse import sse_consumer
-from evaharness.agents.events import RunEvent
-from evaharness.agents.lead_agent import RunCancellation, run_lead_agent
-from evaharness.agents.options import RunOptions, ThinkingLevel
 from evaharness.journal import RunJournal, journaled, validate_id
+from evaharness.runtime import RunCancellation, RunEvent, RunOptions, ThinkingLevel, run_agent
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -89,7 +87,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     options = RunOptions(thinking=body.thinking)
     return _stream(
         request,
-        run_lead_agent(
+        run_agent(
             body.content,
             agent=state.agent_factory.lead(options),
             run_id=run_id,

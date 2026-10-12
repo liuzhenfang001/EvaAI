@@ -63,10 +63,10 @@ def test_lead_context_buckets_by_coordinate_not_the_fallback():
     共用 ``"default"`` 的话，一个会话用掉的重试预算会让另一个会话少一次重试
     （或反过来多一次），而症状只是「偶尔少补一条兜底文案」。
     """
-    from evaharness.agents.lead_agent import LeadContext
+    from evaharness.runtime import RunContext
 
     mw = TerminalResponseMiddleware()
-    rt = Runtime(context=LeadContext(session_id="s", thread_id="s:lead", run_id="r1"))
+    rt = Runtime(context=RunContext(session_id="s", thread_id="s:lead", run_id="r1"))
     mw.after_model(_state(), rt)
 
     assert mw._retried == {"s:lead"}

@@ -21,8 +21,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from evaharness.agents.lead_agent import LeadContext, run_lead_agent
 from evaharness.checkpoint import lead_thread_id
+from evaharness.runtime import RunContext, run_agent
 
 MCP_PAYLOAD: dict[str, Any] = {
     "type": "mcp_elicitation",
@@ -44,7 +44,7 @@ def _graph_that_interrupts(payload: Any):
         interrupt(payload)
         return {}  # pragma: no cover —— 挂起之后不会走到这里
 
-    builder = StateGraph(_State, context_schema=LeadContext)
+    builder = StateGraph(_State, context_schema=RunContext)
     builder.add_node("n", node)
     builder.add_edge(START, "n")
     builder.add_edge("n", END)
@@ -58,9 +58,7 @@ async def test_an_unanswered_mcp_elicitation_ends_the_run_visibly():
     前端拿到 ``status="failed"`` 会追加一句「运行失败：{error}」（`applyRunEnd`），所以这条
     链路是通的——错误文案就是用户能看到的全部内容。
     """
-    events = await collect(
-        run_lead_agent("你好", agent=_graph_that_interrupts(MCP_PAYLOAD), thread_id="th1")
-    )
+    events = await collect(run_agent("你好", agent=_graph_that_interrupts(MCP_PAYLOAD), thread_id="th1"))
 
     end = events[-1]
     assert end.type == "run_end"
@@ -73,9 +71,7 @@ async def test_an_unanswered_mcp_elicitation_ends_the_run_visibly():
 @pytest.mark.asyncio
 async def test_a_payload_that_is_not_elicitation_still_ends_visibly():
     """不认识的 interrupt 也不能被静默吞掉——通用那句同样要以 failed 收场。"""
-    events = await collect(
-        run_lead_agent("你好", agent=_graph_that_interrupts({"type": "something_else"}), thread_id="th2")
-    )
+    events = await collect(run_agent("你好", agent=_graph_that_interrupts({"type": "something_else"}), thread_id="th2"))
 
     end = events[-1]
     assert end.status == "failed"
@@ -93,13 +89,13 @@ async def test_a_run_without_any_interrupt_still_completes():
     async def node(_state):  # noqa: ANN001, ANN202
         return {}
 
-    builder = StateGraph(_State, context_schema=LeadContext)
+    builder = StateGraph(_State, context_schema=RunContext)
     builder.add_node("n", node)
     builder.add_edge(START, "n")
     builder.add_edge("n", END)
     graph = builder.compile(checkpointer=InMemorySaver())
 
-    events = await collect(run_lead_agent("你好", agent=graph, thread_id="th3"))
+    events = await collect(run_agent("你好", agent=graph, thread_id="th3"))
 
     assert events[-1].status == "completed"
 
@@ -114,7 +110,7 @@ async def test_resuming_a_pending_interrupt_lets_the_run_continue():
     工具照样跑完并返回结果。前提见下：server 得是「凭 input_responses 重算」的那种（或把状态
     编码进 `request_state`），把活儿存在自己进程内存里的 server 换进程就接不上了。
 
-    坐标必须**一模一样**：`run_lead_agent` 用的是 ``lead_thread_id(会话)`` = ``{会话}:lead``，
+    坐标必须**一模一样**：`run_agent` 用的是 ``lead_thread_id(会话)`` = ``{会话}:lead``，
     恢复时也得用它，否则 checkpointer 里找不到那段挂起的状态。
     """
     saver = InMemorySaver()
@@ -124,14 +120,14 @@ async def test_resuming_a_pending_interrupt_lets_the_run_continue():
         answers.append(interrupt(MCP_PAYLOAD))
         return {}
 
-    builder = StateGraph(_State, context_schema=LeadContext)
+    builder = StateGraph(_State, context_schema=RunContext)
     builder.add_node("n", node)
     builder.add_edge(START, "n")
     builder.add_edge("n", END)
     graph = builder.compile(checkpointer=saver)
 
     # 第一段：走我们的 runner。挂起被报成 failed，而 node 停在 interrupt() 上。
-    events = await collect(run_lead_agent("你好", agent=graph, thread_id="th-resume"))
+    events = await collect(run_agent("你好", agent=graph, thread_id="th-resume"))
     assert events[-1].status == "failed"
     assert answers == [], "还没人回答，node 不该往下走"
 
@@ -140,9 +136,7 @@ async def test_resuming_a_pending_interrupt_lets_the_run_continue():
     await graph.ainvoke(
         Command(resume=resume),
         config={"configurable": {"thread_id": lead_thread_id("th-resume")}},
-        context=LeadContext(
-            session_id="th-resume", thread_id=lead_thread_id("th-resume"), run_id="r2"
-        ),
+        context=RunContext(session_id="th-resume", thread_id=lead_thread_id("th-resume"), run_id="r2"),
     )
 
     assert answers == [resume], "resume 的值应当**原样**成为 interrupt() 的返回值"
