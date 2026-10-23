@@ -313,3 +313,48 @@ async def test_knowledge_disabled_attaches_nothing(monkeypatch, tmp_path):
     async with lifespan(app):
         assert app.state.knowledge is None
         assert "knowledge_search" not in {tool.name for tool in app.state.agent_factory.tools}
+
+
+# --------------------------------------------------------------------------- #
+# 长期记忆（T20）
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_memory_tools_are_attached_when_enabled(monkeypatch, tmp_path):
+    """启用长期记忆时：**只有 memory_search** 进建图工厂，渲染器与采集器都交给了它。
+
+    抽取器在这里换成假的——真抽取器要解析模型 profile，而这条测试关心的是装配，不是模型。
+    """
+    from evaharness.memory import MemoryUpdate
+
+    async def _fake_extractor(_messages):
+        return MemoryUpdate()
+
+    monkeypatch.setattr("app.gateway.app.make_extractor", lambda _cfg, _mc: _fake_extractor)
+    _stub_lifespan(monkeypatch, tmp_path, extra={"memory": {"enabled": True, "db_path": str(tmp_path / "m.sqlite")}})
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with lifespan(app):
+        runtime = app.state.memory
+        assert runtime is not None
+        assert {tool.name for tool in runtime.tools} == {"memory_search"}
+        tool_names = {t.name for t in app.state.agent_factory.tools}
+        assert "memory_search" in tool_names
+        assert not {"memory_save", "memory_forget"} & tool_names
+        # 空库时渲染器吐空串——那是「这个会话不注入」的信号。
+        assert runtime.render() == ""
+
+        runtime.store.add_fact(content="偏好中文回答")
+        assert "偏好中文回答" in runtime.render()
+
+
+@pytest.mark.asyncio
+async def test_memory_disabled_attaches_nothing(monkeypatch, tmp_path):
+    """没启用长期记忆时：不加工具、不建库（`app.state.memory` 是 None）。"""
+    _stub_lifespan(monkeypatch, tmp_path)
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with lifespan(app):
+        assert app.state.memory is None
+        assert not {tool.name for tool in app.state.agent_factory.tools} & {"memory_save", "memory_search"}

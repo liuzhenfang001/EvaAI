@@ -1174,3 +1174,220 @@ body {
     width: auto;
   }
 }
+
+/* --------------------------------------------------------------------------- */
+/* 记忆管理页（T20）                                                            */
+/* --------------------------------------------------------------------------- */
+
+/* 页面自己居中成一列——与聊天页那条 `.chat-header` 的取舍相同：宽屏上拉满一行很难读。 */
+.memory-page {
+  max-width: 820px;
+  margin-inline: auto;
+  padding: 16px;
+}
+
+.memory-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 0 20px;
+  border-bottom: 1px solid #2a2f3a;
+  margin-bottom: 20px;
+}
+
+.memory-header h1 {
+  font-size: 20px;
+}
+
+.memory-header .subtitle {
+  color: #8a8f98;
+  font-size: 13px;
+}
+
+.memory-back {
+  color: #8a8f98;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.memory-back:hover {
+  color: #fff;
+}
+
+/* 清空是**不可逆**的，所以它退到最右边、样式也退成次要的——不给它任何「顺手就点了」
+   的便利。 */
+.memory-clear {
+  margin-left: auto;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #2a2f3a;
+  background: transparent;
+  color: #8a8f98;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.memory-clear:hover {
+  border-color: #b91c1c;
+  color: #f87171;
+}
+
+.memory-section {
+  margin-bottom: 28px;
+}
+
+.memory-section h2 {
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+
+.memory-hint,
+.memory-empty {
+  color: #8a8f98;
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.memory-add {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 16px;
+}
+
+.memory-add input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #2a2f3a;
+  background: #1c1f26;
+  color: #e6e6e6;
+  font-size: 13px;
+}
+
+.memory-add input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.memory-add select,
+.memory-add button {
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #2a2f3a;
+  background: #1c1f26;
+  color: #c9cdd4;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.memory-add button:disabled {
+  color: #5b6068;
+  cursor: not-allowed;
+}
+
+.profile-list,
+.fact-list {
+  list-style: none;
+}
+
+.profile-list li {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.profile-label {
+  flex: 0 0 88px;
+  color: #8a8f98;
+}
+
+.fact-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #2a2f3a;
+  margin-bottom: 8px;
+}
+
+.fact-item:hover {
+  border-color: #3a4150;
+}
+
+.fact-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.fact-content {
+  display: block;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.fact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+  color: #8a8f98;
+  font-size: 12px;
+}
+
+.fact-category {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #262b34;
+}
+
+/* 纠正是「别再犯」的，所以在列表里给它唯一的强调色——与注入里的保底通道同一个理由。 */
+.fact-category.correction {
+  background: #3b2a2a;
+  color: #f0a0a0;
+}
+
+.fact-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+}
+
+.fact-item:hover .fact-actions {
+  opacity: 1;
+}
+
+.fact-actions button {
+  border: none;
+  background: transparent;
+  color: #8a8f98;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 13px;
+}
+
+.fact-actions button:hover {
+  color: #fff;
+}
+
+/* 聊天页头部那个「记忆」入口。`margin-left: auto` 把它推到最右——它不属于标题那一组。 */
+.chat-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.header-link {
+  margin-left: auto;
+  color: #8a8f98;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.header-link:hover {
+  color: #fff;
+}

@@ -54,6 +54,7 @@ def _factory(
     checkpointer: Any | None = None,
     model_factory: ModelFactory | None = None,
     skills: Sequence[Any] = (),
+    memory: Callable[[], str] | None = None,
     **summarization: Any,
 ) -> AgentFactory:
     return AgentFactory(
@@ -62,6 +63,7 @@ def _factory(
         checkpointer=checkpointer,
         model_factory=model_factory or _answering("好的。"),
         skills=list(skills),
+        memory=memory,
     )
 
 
@@ -385,3 +387,116 @@ def test_no_bash_tool_leaves_every_prompt_byte_for_byte_alone(monkeypatch):
 
     assert seen["lead"] == SYSTEM_PROMPT
     assert seen["subagent"] == SUBAGENT_PROMPT
+
+
+# --------------------------------------------------------------------------- #
+# 长期记忆（T20）
+# --------------------------------------------------------------------------- #
+
+
+MEMORY_BLOCK = "<memory>\n用户偏好中文回答。\n</memory>"
+
+
+@tool("memory_save")
+def _memory_save(content: str) -> str:
+    """假的记忆工具：`_prompt` 与工具表只认名字，所以不需要真的 store。"""
+    return content
+
+
+@tool("memory_search")
+def _memory_search(query: str = "") -> str:
+    """假的检索工具。T21 起模型只拿这一件（save / forget 保留在代码里但不暴露）。"""
+    return query
+
+
+def test_the_memory_section_reaches_the_lead_prompt_only(monkeypatch):
+    """记忆段只进主图：子 agent 拿不到记忆工具（见 `_subagent_tools`），提示词里提它就是提一个
+    调不到的名字——那正是 bash / 知识库那两段一直在避免的事。"""
+    from app.prompts import MEMORY_SECTION, SUBAGENT_PROMPT, SYSTEM_PROMPT
+
+    seen = _spy_system_prompts(monkeypatch)
+
+    _factory(tools=[_biz, _memory_search]).lead()
+
+    assert seen["lead"] == f"{SYSTEM_PROMPT}\n\n{MEMORY_SECTION}"
+    assert seen["subagent"] == SUBAGENT_PROMPT
+
+
+def test_save_and_forget_alone_do_not_pull_in_the_memory_section(monkeypatch):
+    """提示词段只按**模型真正拿到的**那件工具门控。
+
+    save / forget 在代码里保留着，但 T21 不把它们交给模型——一个部署若只注册了它们，提示词里
+    就不该出现「怎么用记忆」那一段。
+    """
+    from app.prompts import SUBAGENT_PROMPT, SYSTEM_PROMPT
+
+    seen = _spy_system_prompts(monkeypatch)
+
+    _factory(tools=[_biz, _memory_save]).lead()
+
+    assert seen["lead"] == SYSTEM_PROMPT
+    assert seen["subagent"] == SUBAGENT_PROMPT
+
+
+def test_no_memory_tool_leaves_every_prompt_byte_for_byte_alone(monkeypatch):
+    """没开长期记忆的部署，提示词与从前**逐字节相同**（前缀缓存与 `test_lead_agent` 都靠这条）。"""
+    from app.prompts import SUBAGENT_PROMPT, SYSTEM_PROMPT
+
+    seen = _spy_system_prompts(monkeypatch)
+
+    _factory(tools=[_biz]).lead()
+
+    assert seen["lead"] == SYSTEM_PROMPT
+    assert seen["subagent"] == SUBAGENT_PROMPT
+
+
+def test_the_memory_tools_stay_out_of_the_subagent():
+    """与 `present_files` 同规则：「交给用户看的」与「记住用户的」都只属于主 Agent。"""
+    from app.gateway.agents import _subagent_tools
+
+    assert _subagent_tools([_biz, _memory_save]) == [_biz]
+
+
+def test_the_memory_middleware_only_wraps_the_lead_graph(monkeypatch):
+    """注入只挂 lead 链——子 agent 的存在理由就是上下文隔离。"""
+    import app.gateway.agents as agents_module
+    from evaharness.agents.middlewares import MemoryMiddleware
+
+    seen: dict[str, list] = {}
+    real_subagent = agents_module.make_subagent_graph
+    real_lead = agents_module.make_lead_agent
+
+    def spy_subagent(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
+        seen["subagent"] = list(kwargs.get("middleware") or [])
+        return real_subagent(model, tools, **kwargs)
+
+    def spy_lead(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
+        seen["lead"] = list(kwargs.get("middleware") or [])
+        return real_lead(model, tools, **kwargs)
+
+    monkeypatch.setattr(agents_module, "make_subagent_graph", spy_subagent)
+    monkeypatch.setattr(agents_module, "make_lead_agent", spy_lead)
+
+    _factory(tools=[_biz, _memory_save], memory=lambda: MEMORY_BLOCK).lead()
+
+    assert any(isinstance(item, MemoryMiddleware) for item in seen["lead"])
+    assert not any(isinstance(item, MemoryMiddleware) for item in seen["subagent"])
+
+
+def test_no_memory_renderer_means_no_memory_middleware(monkeypatch):
+    """渲染器为 ``None``（没开这个功能）时链上不该多出中间件。"""
+    import app.gateway.agents as agents_module
+    from evaharness.agents.middlewares import MemoryMiddleware
+
+    seen: dict[str, list] = {}
+    real_lead = agents_module.make_lead_agent
+
+    def spy_lead(model, tools=None, **kwargs):  # noqa: ANN001, ANN003
+        seen["lead"] = list(kwargs.get("middleware") or [])
+        return real_lead(model, tools, **kwargs)
+
+    monkeypatch.setattr(agents_module, "make_lead_agent", spy_lead)
+
+    _factory(tools=[_biz, _memory_save]).lead()
+
+    assert not any(isinstance(item, MemoryMiddleware) for item in seen["lead"])

@@ -12,15 +12,21 @@ T8 起 EvaAI 的路径是一个 **ReAct 主 Agent**，不再是 Plan-Exec 编排
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
 from langchain.chat_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 from langgraph.graph.state import CompiledStateGraph
 
-from evaharness.agents.middlewares import StepBudgetMiddleware, build_default_middlewares
+from evaharness.agents.middlewares import (
+    MemoryCaptureMiddleware,
+    MemoryMiddleware,
+    StepBudgetMiddleware,
+    build_default_middlewares,
+)
 from evaharness.config.app_config import SummarizationConfig
 from evaharness.runtime import RunContext
 
@@ -51,20 +57,33 @@ def build_lead_middlewares(
     summarization: SummarizationConfig | None = None,
     summary_model: BaseChatModel | None = None,
     max_steps: int = 100,
+    memory: Callable[[], str] | None = None,
+    memory_capture: Callable[[str, Sequence[BaseMessage]], None] | None = None,
 ) -> list[AgentMiddleware]:
-    """lead agent 的中间件链 = EvaAI 默认链 + 步数预算 + 会话摘要压缩。
+    """lead agent 的中间件链 = EvaAI 默认链 + 步数预算 + 长期记忆 + 会话摘要压缩。
 
     步数预算只接在**主 Agent** 这条链上，不进 :func:`build_default_middlewares`——
     子 agent 图仍由 langgraph 默认 recursion_limit + 循环检测兜住，本片不扩（它的坐标
     是运行级的，跨轮复用预算没有意义）。
 
+    长期记忆同理只挂 lead 链，且**默认不挂**（``memory=None``）：子 agent 的存在理由就是
+    上下文隔离，把用户画像喂进去没有意义；而没开这个功能的部署不该多一个中间件。
+    记忆是**一头一尾**两个中间件：``MemoryMiddleware`` 在开头把快照写进 state（thread 内一次），
+    ``MemoryCaptureMiddleware`` 在结尾把本轮对话交给后台抽取。两者由同一个开关一起挂。
+
     摘要挂在**最后（最内层）**，这是有理由的：它在 ``before_model`` 里改 state，
     排在最后意味着它是最后一道改消息的工序——量到的 token 数就是模型真正会收到的
     数量（``InputSanitizationMiddleware`` 的包裹、``LoopDetectionMiddleware`` 的
-    警告注入与 :class:`StepBudgetMiddleware` 的强制收尾都已经生效）。
+    警告注入与 :class:`StepBudgetMiddleware` 的强制收尾都已经生效）。记忆排在它**之前**，
+    为的就是让这条不变量继续成立（记忆改的是``wrap_model_call`` 那一层，本就不出现在
+    ``before_model`` 的度量里）。
     """
     chain: list[AgentMiddleware] = list(build_default_middlewares())
     chain.append(StepBudgetMiddleware(max_steps=max_steps))
+    if memory is not None:
+        chain.append(MemoryMiddleware(memory))
+    if memory_capture is not None:
+        chain.append(MemoryCaptureMiddleware(memory_capture))
     if summarization is None or not summarization.enabled:
         return chain
 

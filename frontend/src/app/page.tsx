@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   ChatMessage,
@@ -492,6 +493,11 @@ export default function Home() {
         <header className="chat-header">
           <h1>EvaAI</h1>
           <span className="subtitle">企业级个人 AI 助手</span>
+          {/* 记忆的出口。放在这里而不是侧栏：它是**偶尔**才需要看一眼的东西，塞进每次都在
+              眼前的会话列表会喧宾夺主。 */}
+          <Link className="header-link" href="/memory">
+            记忆
+          </Link>
         </header>
 
         <section className="messages" ref={listRef} onScroll={onListScroll}>

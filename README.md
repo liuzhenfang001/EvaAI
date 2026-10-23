@@ -1,36 +1,40 @@
 # EvaAI
 
-企业级可用标准的**个人 AI 助手**。顶层是一个 **ReAct 主 Agent**（`lead agent`）——用户直接与它对话，它自己决定调什么工具、要不要派子 agent。（曾经的 Plan-Exec 编排在 T16 下线，见 [ADR-0021](docs/adr/0021-plan-exec-retirement.md)。）
+企业级可用标准的**个人 AI 助手**。顶层是一个 **ReAct 主 Agent**（`lead agent`）——用户直接与它
+对话，它自己决定调什么工具、要不要派子 agent。
 
-核心是 **harness 工程思想**：框架层（harness）与业务层（app）分离，harness 不关注业务、只为业务提供可扩展性支持。整体层级与框架严格参照本地参考项目 DeerFlow，但针对「个人助手、本地部署」大幅裁剪。
+核心是 **harness 工程思想**：框架层（harness）与业务层（app）分离，harness 不关注业务、只为业务
+提供可扩展性支持。整体层级与框架严格参照本地参考项目 DeerFlow，但针对「个人助手、本地部署」
+大幅裁剪。
 
 ## 目录结构
 
 ```
 backend/
 ├── packages/harness/evaharness/   # 框架层（业务无关，可插拔机制）
-│   ├── runtime/                   # ★ 契约中枢：事件契约 / 运行上下文 / 运行入口与取消（ADR-0024）
+│   ├── runtime/                   # 契约中枢：事件契约 / 运行上下文 / 运行入口与取消
 │   │   ├── event/                 #   RunEvent 契约 + 工具载荷 + 图流翻译
 │   │   ├── context/               #   RunContext + 访问器 + 每请求旋钮
 │   │   └── runs/                  #   run_agent + pump + 取消 + 终态读取
-│   ├── agents/                    # agent 层：主 Agent 的 ReAct 图 + 子 agent 派发 + 治理中间件
-│   ├── sandbox/                   # 虚拟路径沙箱 + docker 沙箱 + 文件工具 + bash（ADR-0020）
-│   ├── knowledge/                 # RAG 知识库机制：切分 / 向量存储 / 索引器 / 检索工具（ADR-0022）
-│   ├── fingerprint/               # 目录指纹与变更检测（只回答「变了没、变哪些」）
+│   ├── agents/                    # agent 层：ReAct 图 + 子 agent 派发 + 治理中间件
+│   ├── sandbox/                   # 虚拟路径沙箱 + docker 沙箱 + 文件工具 + bash
+│   ├── knowledge/                 # RAG 知识库：切分 / 向量存储 / 索引器 / 检索工具
+│   ├── memory/                    # 长期记忆：画像 + 事实（SQLite）+ 注入 / 采集 / 抽取
+│   ├── fingerprint/               # 目录指纹与变更检测
 │   ├── checkpoint/                # checkpoint 持久化（SQLite）与保留策略
 │   └── journal/                   # RunJournal + 可插拔 store（内存 / JSONL）
 ├── app/                           # 业务层（助手人设、具体工具/技能）
 │   ├── gateway/                   # FastAPI + SSE + 每请求建图的 AgentFactory
 │   └── tools/                     # 工具注册表 + 沙箱布局 + 交付/联网工具
 └── tests/                         # 测试（含 test_harness_boundary.py 强制单向依赖）
-frontend/                          # Next.js 前端（会话栏 + 聊天区 + 浮动任务面板）
+frontend/                          # Next.js 前端（会话栏 + 聊天区 + 浮动任务面板 + /memory 管理页）
 skills/                            # 技能源（启动期镜像到 /skills，见 skills/README.md）
-knowledge/                         # 知识库源（启动期镜像到 /knowledge 并建向量索引，见知识库一节）
+knowledge/                         # 知识库源（启动期镜像到 /knowledge 并建向量索引）
 config.yaml / config.example.yaml  # 主配置（版本化，$ENV 引用）
 extensions_config.json             # 扩展（MCP / skills / middlewares），模板同上
 .env                               # 密钥
-data/                              # 运行时数据（SQLite checkpoint + 向量库 + 指纹 + data/journal/<会话>/，已 gitignore）
-backend/.evaai/                    # 文件沙箱的运行期数据（input/output/workspace/skills-view/knowledge-view，已 gitignore）
+data/                              # 运行时数据（checkpoint + 记忆库 + 向量库 + 指纹 + journal）
+backend/.evaai/                    # 文件沙箱运行期数据（input/output/workspace/...，已 gitignore）
 ```
 
 ## 环境要求
@@ -39,47 +43,60 @@ backend/.evaai/                    # 文件沙箱的运行期数据（input/outp
 - [uv](https://docs.astral.sh/uv/)（依赖与虚拟环境管理）
 - Node.js >= 20 与 npm（前端）
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)**（可选）**——只有要用 `bash`
-  工具（docker 沙箱，T15）才需要；不装的话照「快速开始」走，服务照常起
+  工具（docker 沙箱）才需要；不装的话服务照常起
 
 ## 快速开始
 
 ```bash
-# 1. 用独立虚拟环境安装依赖（backend/.venv，不污染全局）
+# 1. 安装依赖（backend/.venv）
 cd backend
 uv sync
 
 # 2. 准备配置
 cp ../config.example.yaml ../config.yaml
-cp ../.env.example ../.env        # 填入 DEEPSEEK_API_KEY（要用知识库再填 DASHSCOPE_API_KEY）
+cp ../.env.example ../.env        # 填入 DEEPSEEK_API_KEY；要用知识库再填 DASHSCOPE_API_KEY
 cp ../extensions_config.example.json ../extensions_config.json
 
 # 3. 跑测试
 uv run pytest
 
-# 4. 启动后端（端口 8010；8001/3000 被参照项目 DeerFlow 占着）
+# 4. 启动后端（端口 8010）
 uv run uvicorn app.gateway.app:app --port 8010
 
-# 5. 启动前端（另开终端，端口 3010；package.json 里已固定）
+# 5. 启动前端（另开终端，端口 3010）
 cd ../frontend && npm install && npm run dev
 ```
 
-浏览器打开 <http://localhost:3010>，发「现在几点？」应看到：**直接流式吐字**，没有「规划中…」的等待；连问「我叫什么」会发现它记得上一轮说过的名字。左侧会话栏可开新对话、在历史对话间切换、重命名或删除；**刷新页面或重启后端后，当前会话的整段对话都会重建**（记录落在 `data/journal/<会话>/`）。
+浏览器打开 <http://localhost:3010> 即可对话。左侧会话栏支持新建、切换、重命名与删除；对话与运行
+记录落在 `data/journal/<会话>/`，刷新页面或重启后端后会重建。
 
-助手气泡把 Agent 的多轮过程**折起来**：当前那一轮灰色实时打字，工具结果回来、下一轮开始时自动收起成「第 N 步 · 调用了什么」的一行（点得开）；最终回复正常显示，与过程一眼分得开。用户消息右对齐、助手消息左对齐，气泡宽度随文本长短变化。右侧的任务编排面板**暂时下线**（组件与样式都还在，由 `page.tsx` 的 `SHOW_TASK_PANEL` 开关控制）。
+### 配置与端口
+
+- **配置**：三层（`.env` / `config.yaml` / `extensions_config.json`），启动时加载并校验
+  `config_version`，不支持热重载。
+- **端口**：后端 8010、前端 3010。前端访问后端的地址只写在
+  [frontend/src/core/api/config.ts](frontend/src/core/api/config.ts) 一处；要换地址就在
+  `frontend/.env.local` 里设 `NEXT_PUBLIC_API_URL`（Next.js 只从前端目录读环境文件，仓库根的
+  `.env` 是给后端用的）。
+- **联网工具**：两个 key 都是可选的。`web_search` 走 Tavily，不填 `TAVILY_API_KEY` 就用无 key
+  模式（能用，有速率上限）；`web_fetch` 走 Jina Reader，不填 `JINA_API_KEY` 同样只是速率受限。
 
 ## 开发约定
 
-- **日志**：`config.yaml` 的 `log_level` 管我们自己的两个命名空间（`app.*` / `evaharness.*`），
-  启动期消费（[ADR-0023](docs/adr/0023-log-level-consumption.md)）。uvicorn 自己的日志另有其
-  `--log-level`；两者互不覆盖。第三方（httpx / chromadb）的日志**不受我们管辖**——不这么切的话
-  httpx 每个请求一条 INFO 会把真正想看的几条淹掉。
-- **TDD**：harness 层强制红-绿-重构（先写契约测试，再实现）。
-- **单向依赖**：`app` 可 import `evaharness`，反向禁止（由 `tests/test_harness_boundary.py` 卡死）。见 [ADR-0001](docs/adr/0001-harness-app-one-way-dependency.md)。
-- **可插拔点**：统一用 `evaharness.reflection` 的 `resolve_class`（类）/ `resolve_variable`（实例，如工具），配置里写 `"module.path:attr"`，零 DI 容器。
+- **单向依赖**：`app` 可 import `evaharness`，反向禁止（由 `tests/test_harness_boundary.py` 卡死）。
+  见 [ADR-0001](docs/adr/0001-harness-app-one-way-dependency.md)。
+- **可插拔点**：统一用 `evaharness.reflection` 的 `resolve_class`（类）/ `resolve_variable`
+  （实例，如工具），配置里写 `"module.path:attr"`，没有 DI 容器。
+- **测试**：`uv run pytest` 内置覆盖率门槛（`--cov=evaharness --cov-fail-under=80`）；要看缺哪几行，
+  单跑 `uv run pytest --cov-report=term-missing`。harness 层按红-绿-重构先写契约测试。
+- **日志**：`config.yaml` 的 `log_level` 管 `app.*` / `evaharness.*` 两个命名空间，启动期消费
+  （[ADR-0023](docs/adr/0023-log-level-consumption.md)）；uvicorn 自己的日志另有 `--log-level`。
+  第三方库（httpx / chromadb）的日志不受我们管辖。
 
 ## 工具集
 
-agent 能做什么由 `config.yaml` 的 `tools:` 决定（见 [ADR-0012](docs/adr/0012-tool-registry-and-file-sandbox.md)）。**加一个工具 = 写一个 `@tool` + 加一项配置，不改框架代码**：
+agent 能做什么由 `config.yaml` 的 `tools:` 决定（见 [ADR-0012](docs/adr/0012-tool-registry-and-file-sandbox.md)）。
+**加一个工具 = 写一个 `@tool` + 加一项配置，不改框架代码**：
 
 ```yaml
 tools:
@@ -87,7 +104,9 @@ tools:
     use: app.tools.mine:my_tool        # 也可以指向工厂：app.tools.web:make_web_search
 ```
 
-`use` 指向工厂时，同一项里的其它键就是工厂的关键字参数（在启动期绑进闭包，模型看不到也改不了）。`name` 必须与工具自己的 `.name` 一致；全表不许重名、不许占用 `task`——**这几条在启动期校验，写错就拒绝启动**。
+`use` 指向工厂时，同一项里的其它键就是工厂的关键字参数（在启动期绑进闭包，模型看不到也改不了）。
+`name` 必须与工具自己的 `.name` 一致；全表不许重名、不许占用 `task`——这几条在启动期校验，写错就
+拒绝启动。
 
 工具看到的路径是**虚拟路径**，宿主目录藏在 `backend/.evaai/` 后面：
 
@@ -97,14 +116,9 @@ tools:
 | `/output` | 交付给用户的成品 | 读写 |
 | `/input` | 用户上传的原件 | 只读 |
 | `/skills` | 技能说明文件（启动期从仓库的 `skills/` 镜像过来） | 只读 |
+| `/knowledge` | 知识库原文（启动期从仓库的 `knowledge/` 镜像过来） | 只读 |
 
-联网工具的两个 key 都是**可选**的：web_search 走 Tavily，不填 `TAVILY_API_KEY` 就用它的无 key 模式（能用，但有速率上限）；web_fetch 走 Jina Reader，不填 `JINA_API_KEY` 也能用（同样只是速率受限）。
-- **配置**：三层（.env / config.yaml / extensions_config.json），启动加载 + `config_version` 校验，无热重载。
-- **前端包管理**：原定 pnpm，因本机 corepack 权限受限（EPERM）改用 npm；`package-lock.json` 为准。
-- **外网访问**：本机 `gh` 与 `npm install` 需走本地代理 `127.0.0.1:7890`。
-- **端口**：后端 8010、前端 3010——8001 / 3000 留给本机的参照项目 DeerFlow。前端访问后端的地址只写在 [frontend/src/core/api/config.ts](frontend/src/core/api/config.ts) 一处，要换地址就在 `frontend/.env.local` 里设 `NEXT_PUBLIC_API_URL`（Next.js 只从前端目录读环境文件，仓库根的 `.env` 是给后端用的）。
-
-## MCP（T13）
+## MCP
 
 在 `extensions_config.json` 的 `mcpServers` 里声明一个 server，它的工具就会出现在 agent 的工具表里：
 
@@ -124,27 +138,22 @@ tools:
 ```
 
 `transport` 可以不写——有 `command` 就是 `stdio`，有 `url` 就是 `http`（只支持这两种）。工具名一律是
-`mcp__<server>__<tool>`，所以**不会**和 `config.yaml` 里的业务工具撞名（那不是假想：官方 filesystem
-server 就有 `read_file` / `write_file`，正是我们的工具名）。
+`mcp__<server>__<tool>`，所以不会和 `config.yaml` 里的业务工具撞名。
 
-**临时不用某个 server**：给它加 `"enabled": false`（缺省开）。关掉的 server **根本不建连**——
-不 spawn 子进程、不占启动时间（stdio 首次 `npx` 要下包，实测 30.9 秒）。配置留着，想用时改回 `true`
-重启即可；要彻底不留痕迹就把那段删掉。改完要**重启后端**（工具清单是启动期常量，见
-[ADR-0017](docs/adr/0017-mcp-connections.md) 补记二）。
+**临时不用某个 server**：给它加 `"enabled": false`（缺省开）。关掉的 server 根本不建连——不 spawn
+子进程、不占启动时间。配置留着，想用时改回 `true` 重启即可。改完要**重启后端**（工具清单是启动期
+常量，见 [ADR-0017](docs/adr/0017-mcp-connections.md)）。
 
 几条要记住的行为：
 
-- **工具清单在启动期取一次**，之后每次运行**零 I/O**；连接建在模型**真的调某个工具**的那一刻。
-  好处是不用 MCP 的对话完全免费；代价是「调几次就付几次建连」（stdio 每次约 2 秒），而且
-  **连不上的 server 要重启才生效**、连上后又挂掉的 server 会**在调用的那一刻**报错而不是被跳过。
-- **一个 server 连不上不影响别的**，也不影响服务启动。启动期会连一次并**响亮地警告**（会
-  spawn 子进程、首次 `npx` 还要下包，所以启动可能多等几秒）。
-- **Windows 上要写 `npx.cmd`，不能写 `npx`**——PATH 里那个无扩展名的 `npx` 是 Git Bash 的 sh 脚本，
-  `CreateProcess` 会报 `WinError 193`，而那句话里没有一个字指向真正的原因。（我们也会兜一层：
-  命令解析到无扩展名的文件时会去找同名的 `.cmd`。）
-- 没配任何 server 时，这一整套代码**一行都不碰**——运行路径与 T12 之前完全一致。
+- **工具清单在启动期取一次**，之后每次运行零 I/O；连接建在模型真的调某个工具的那一刻。不用 MCP
+  的对话完全免费；代价是「调几次就付几次建连」，连不上的 server 要重启才生效。
+- **一个 server 连不上不影响别的**，也不影响服务启动；启动期会连一次并响亮地警告。
+- **Windows 上要写 `npx.cmd`，不能写 `npx`**——PATH 里那个无扩展名的 `npx` 是 shell 脚本，
+  `CreateProcess` 会报 `WinError 193`。（命令解析到无扩展名文件时会自动找同名 `.cmd`。）
+- 没配任何 server 时，这套代码不会被执行。
 
-## 技能（T14）
+## 技能
 
 `skills/<名>/SKILL.md` 里写一段「做事方法」，重启后端后它就会出现在模型的提示词里：
 
@@ -162,16 +171,15 @@ description: 把这一周做过的事整理成一份能直接发出去的周报�
 
 几条要记住的行为：
 
-- **正文不进提示词**：提示词里只有名字、描述和一个位置，模型判断相关时**自己** `read_file` 读全文。
+- **正文不进提示词**：提示词里只有名字、描述和一个位置，模型判断相关时自己 `read_file` 读全文。
   这样提示词不会随技能正文膨胀，改一个技能也不会让前缀缓存失效。
-- **启动期镜像**：`skills/` 是源（进版本控制），`backend/.evaai/skills-view/` 是视图（运行期数据、
-  已 gitignore）。**源里删掉的技能也会从视图里消失**；一个技能都没有时不建视图目录。
+- **启动期镜像**：`skills/` 是源（进版本控制），`backend/.evaai/skills-view/` 是视图（运行期数据）。
+  源里删掉的技能也会从视图里消失；一个技能都没有时不建视图目录。
 - **改技能要重启**（没有热加载）。
-- **坏技能只警告**：启动日志里点名是哪个目录、差在哪里，服务照常起。技能是可选内容，不像
-  `config.yaml` 的工具那样「写错就拒绝启动」——但也不会静默跳过。
-- 想停用某个技能就把它的目录移走；`extensions_config.json` 的 `skills` 那一节目前**没有用途**。
+- **坏技能只警告**：启动日志里点名是哪个目录、差在哪里，服务照常起。
+- 想停用某个技能就把它的目录移走。
 
-## docker 沙箱（T15）
+## docker 沙箱
 
 给模型一个能跑命令的 Linux 容器。**默认关闭**——`config.example.yaml` 里 bash 那一条是注释掉的，
 要用得先装 [Docker Desktop](https://www.docker.com/products/docker-desktop/) 并准备好镜像：
@@ -180,86 +188,65 @@ description: 把这一周做过的事整理成一份能直接发出去的周报�
 docker pull enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0
 ```
 
-然后把模板里 bash 那一段的注释去掉（镜像、网络、超时、内存、CPU、进程数都是它的旋钮）。
-见 [ADR-0019](docs/adr/0019-docker-sandbox.md)。
+然后把模板里 bash 那一段的注释去掉（镜像、网络、超时、内存、CPU、进程数都是它的旋钮）。见
+[ADR-0019](docs/adr/0019-docker-sandbox.md)。
 
-**它是怎么和文件工具对上号的**：容器里那些目录**就是**虚拟路径本身（`/workspace`、`/output`、
-`/input`、`/skills`、`/knowledge`），宿主目录经 bind mount 映射进去。所以容器里 `echo hi > /workspace/a.txt`，
-文件工具 `read_file /workspace/a.txt` 立刻读得到——**是同一个文件**，不是两套坐标系靠约定对齐。
-`/input`、`/skills`、`/knowledge` 的只读到这里由 **docker 强制**（容器里 `touch /input/x` 会真的失败）。
+**它是怎么和文件工具对上号的**：容器里那些目录就是虚拟路径本身（`/workspace`、`/output`、
+`/input`、`/skills`、`/knowledge`），宿主目录经 bind mount 映射进去。所以容器里
+`echo hi > /workspace/a.txt`，文件工具 `read_file /workspace/a.txt` 立刻读得到——是同一个文件。
+只读目录的只读由 docker 强制。
 
 几条要记住的行为：
 
-- **每会话一个长驻容器**，名字 `evaai-<会话 id>`；装过的包在会话里留存。`DELETE /threads/{id}`
-  会连带删掉它，后端启动时也会清掉「会话已不在 journal 里」的孤儿容器。
-- **容器内那些挂载目录之外的东西会丢**（`/tmp`、装的包、后台进程）：文件工具看不见，容器重建就没了。
-  要留下的东西写 `/workspace` 或 `/output`。
+- **每会话一个长驻容器**，名字 `evaai-<会话 id>`；装过的包在会话里留存。删除会话会连带删掉它，
+  后端启动时也会清掉孤儿容器。
+- **挂载目录之外的东西会丢**（`/tmp`、装的包、后台进程）；要留下的写 `/workspace` 或 `/output`。
 - **每次 `bash` 调用是全新 shell**：`cd`、`export` 不跨调用。
 - **命令的非零退出码是正常返回**（形如 `[exit code 1]`），只有 docker 这一层失败才是工具错误。
-- 启用了 bash 而 docker / 镜像不可用 → **服务拒绝启动**，并在日志里给出可执行的提示。
+- 启用了 bash 而 docker / 镜像不可用 → 服务拒绝启动，并在日志里给出可执行的提示。
 
-## 知识库（T18）
+## 知识库
 
-给模型一个可检索的本地**知识库**。源是仓库根的 `knowledge/`（把文档放进去即可，`.md` / `.txt`），
-启动期切分、嵌入、存进本地 ChromaDB，模型用 `knowledge_search` 工具按需取用。
+给模型一个可检索的本地知识库。源是仓库根的 `knowledge/`（把文档放进去即可，`.md` / `.txt`），启动期
+切分、嵌入、存进本地 ChromaDB，模型用 `knowledge_search` 工具按需取用。
 
-**默认关闭**——`config.example.yaml` 里 `knowledge` 那一段是注释掉的，要用得先有嵌入 key
-（`.env` 里填 `DASHSCOPE_API_KEY`，走通义 `text-embedding-v4` 的 OpenAI 兼容端点），再把 `enabled`
-打开。缺 key 却 `enabled: true` 会**拒绝启动**（那是显式配置错，不是「功能没开」）。
+**默认关闭**——`config.example.yaml` 里 `knowledge` 那一段是注释掉的，要用得先有嵌入 key（`.env`
+里填 `DASHSCOPE_API_KEY`，走通义 `text-embedding-v4` 的 OpenAI 兼容端点），再把 `enabled` 打开。
+缺 key 却 `enabled: true` 会拒绝启动。细节见 [ADR-0022](docs/adr/0022-knowledge-base-rag.md)。
 
-它的形状，几句话说清（细节见 [ADR-0022](docs/adr/0022-knowledge-base-rag.md)）：
+- **源目录即真相**：改 `knowledge/` 里的文件后重启，启动期比对按文件的指纹，只对改动过的文件重切、
+  重嵌、替换。没变就跳过。
+- **换嵌入模型会整库重建**：模型 / 端点 / 维度 / 切分参数构成「索引配方」，记在向量库里；不一致就
+  丢弃旧向量全部重算。
+- **重建在后台跑，不拖慢启动**；重启后第一条检索会等索引就绪，构建失败则那次检索可见地报错。
+- **命中不塞回上下文**：`knowledge_search` 把匹配片段写进 `/workspace/retrieved/<hash>/chunk_i.md`，
+  只回路径，模型自己 `read_file`。
+- **`/knowledge` 是只读挂载**：模型命中片段后还能读原件全文；它随 bash 容器一起只读挂载。
+- **中文友好**：切分显式带中文句末标点，不靠默认的英文分隔符硬切。
 
-- **源目录即真相**：改 `knowledge/` 里的文件后**重启**，启动期比对**按文件**的指纹，只对**改动过的
-  文件**重切、重嵌、替换（删除也在差异里，移走的文件随之清出）。没变就跳过。**增量重建**让
-  「改一个文件」的代价是重嵌那一个文件，而不是整库重来。
-- **换嵌入模型会整库重建**：模型 / 端点 / 维度 / 切分参数构成「索引配方」，记在向量库里；启动时
-  一比对，不一致就丢弃旧向量全部重算——因为源一个字没改，向量也已经作废了（不重建的后果是检索
-  **静默变差**，或者维度对不上直接报错）。改了切分逻辑同理，靠 `SPLITTER_RECIPE` 版本号触发。
-- **重建在后台跑，不拖慢启动**：lifespan 只做建库、建工具、起一个后台任务就放行。重启后第一条检索
-  会**等**索引就绪；构建失败则那次检索**可见地报错**，不静默返回空。
-- **命中不塞回上下文**：`knowledge_search` 把匹配片段写进 `/workspace/retrieved/<query 哈希>/chunk_i.md`，
-  **只回路径**，模型自己 `read_file` 去读——上下文预算按需。
-- **`/knowledge` 是第五个只读挂载**：启动期从仓库 `knowledge/` 镜像过来（照 `/skills` 的做法），
-  所以模型命中一个片段后还能 `read_file /knowledge/xx.md` 读原件全文。它随 bash 容器一起只读挂载。
-- **中文友好**：切分显式带中文句末标点（`。！？；，、`），不靠默认的英文分隔符硬切。
+## 长期记忆
 
-## 四维度验收（T6）
+让助手**跨会话**记住关于你的事：六块画像摘要（工作 / 个人 / 当前关注 + 最近几个月 / 更早的上下文 /
+长期背景）与一条条原子事实，存在本地 `data/memory.sqlite`。
 
-「可运行 / 可测试 / 可观测 / 可扩展」四条收口，各自这样验：
+**默认关闭**（`config.example.yaml` 里 `memory` 那一段是注释掉的）。打开它不需要任何 key，只需把
+`enabled` 改成 `true`。细节见 [ADR-0025](docs/adr/0025-long-term-memory.md) 与
+[ADR-0026](docs/adr/0026-passive-memory-extraction.md)。
 
-- **可运行**：新机器按上方「快速开始」从零走一遍——`uv sync` → 复制 `config.example.yaml` / `.env.example` / `extensions_config.example.json` → `uv run pytest` → uvicorn → `npm install && npm run dev`。除了这三份模板，没有其它需要手动准备的东西。
-- **可测试**：`uv run pytest` 内置覆盖率门槛（`--cov=evaharness --cov-fail-under=80`）——harness 层（框架层）覆盖率低于 80% 会直接红；当前 94%。要看缺哪几行，单跑 `uv run pytest --cov-report=term-missing`。
-- **可观测**：每次运行（`/chat/stream`）都经 `journaled` 把 `run_start → … → run_end` 的完整事件序列落进 RunJournal（`data/journal/<会话>/`），刷新/重启后按会话回放。
-- **可扩展**：加一个工具 = 写一个 `@tool`（或工厂）+ 在 `config.yaml` 的 `tools:` 加一项，不改任何框架代码——见上方「工具集」。
+- **写入是被动的**：每轮对话结束后，系统只把「你的消息 + 助手的最终回复」放进一个按会话去抖的后台
+  队列（默认安静 30 秒），由抽取模型整理成画像与事实。模型没有 `memory_save` 可调，所以不会在任务
+  面板里看到「助手正在记东西」，也不会听到它说「好的，我记住了」。同一件事说两遍会被合并/替换，
+  而不是留下两条矛盾记录。
+- **注入在会话开头一次**：当前记忆渲染成一段 `<memory>…</memory>`，作为一条 `hide_from_ui` 的隐藏
+  消息写进会话状态；之后每轮模型都能从历史里看到它，但不会再重复。它不进 RunJournal、也不出现在
+  前端。会话中途新抽取的记忆从下一个会话生效；当前会话需要时由模型用 `memory_search` 查。
+- **模型只拿 `memory_search`**：可按关键词、分类或起始时间（`since`，ISO 8601）检索事实。
+- **有预算**：整段注入默认 2000 token；`correction`（你纠正过的事）先占 500 token 的保底通道，剩下
+  的给画像、再给其余事实。装不下的一条整条丢掉，不截半句。
+- **只属于主 Agent**：记忆工具与注入都不进子 agent（与 `present_files` 同规则）。
+- **能自己改**：`/memory` 页面可以看、增、改、删每一条事实，也能一键清空。
 
 ## 文档
 
 - [CONTEXT.md](CONTEXT.md) —— 项目词汇表（术语与用词约定）。
 - [docs/adr/](docs/adr/) —— 架构决策记录。
-
-## 垂直切片
-
-工作按端到端打穿的**垂直切片**交付：
-
-- [x] **T1**（#1）端到端最小聊天链路：浏览器发消息 → 流式回复 + 调用一个纯函数工具
-- [x] ~~**T2**（#2）Plan-Exec 编排（单任务）：planner 出计划 → ReAct 执行单元逐个执行 → replanner 判定 → 汇总，全程可在计划面板观察~~（**T16 已下线**）
-- [x] **T3**（#4）subagent 并行 + 运行时间线：无依赖任务按批并行派发（ADR-0008），RunJournal 落盘并支持按 run_id 回放
-- [x] **T4**（#3）工具集：文件读写与检索（六个工具，跑在虚拟路径的沙箱里）+ web_search/web_fetch + 配置驱动的工具注册表——加一个工具只加文件与配置，不改框架（ADR-0012）
-- [x] **T5**（#5）中断与恢复
-- [x] **T6**（#6）四维度验收收口
-- [x] **T7**（#7）会话与对话历史：多会话新建/切换/重命名/删除，整段对话落盘并可在刷新/重启后重建（ADR-0009）
-- [x] **T8**（#8）ReAct 主 Agent 取代 Plan-Exec 成为默认路径：直答 + 多轮记忆 + 会话摘要压缩 + 子 agent 派发；Plan-Exec 退到封存路径（ADR-0010，T16 已整体下线，见 ADR-0021）
-- [x] **T9**（#9）agent 每请求构建：消除单例中间件的并发洞，并把「每请求配置」的门打开（ADR-0011）
-- [x] **T10**（#10）助手回复渲染 Markdown：react-markdown + GFM + 代码高亮（ADR-0014）
-- [x] **T11**（#11）文件卡片与预览：`present_files` 工具 + 下载路由 + 右侧预览面板（ADR-0015）
-- [x] **T12**（#12）思考模式与动态思考深度：DeepSeek 适配器 + 每请求参数契约 + 档位选择器（ADR-0016）
-- [x] **T13**（#14）MCP 集成：`mcpServers` 配置 + 每请求连接（`langchain.mcp`）+ `mcp__<server>__<tool>` 命名（ADR-0017）
-- [x] **T14**（#15）skill 加载机制：仓库 `skills/` 源目录 → 启动期镜像到 `/skills` → 提示词只列清单（ADR-0018）
-- [x] **T15**（#16）docker 沙箱：每会话一个长驻容器 + `bash` 工具，四个挂载点原样 bind 进容器（容器内路径就是虚拟路径），`/input` 与 `/skills` 的只读改由 docker 强制（ADR-0019）
-- [x] **T16**（#17）Plan-Exec 下线：产线删除、事件契约搬到 `agents/events.py`、前端与 journal 契约保持以支持老数据回放（ADR-0021）
-- [x] **T17**（#18）沙箱与文件工具上移到 harness：`evaharness.sandbox` 拿机制、宿主根与挂载表经运行上下文注入（模块全局消失）（ADR-0020）
-- [x] **T18**（#19）RAG 知识库（纯文本端到端）：目录指纹 + 按文件增量重建 + `sqlite-vec` 纯向量检索；命中落 `/workspace` 只回路径；新增只读挂载 `/knowledge`（ADR-0022）
-
-**三期范围**（2026-10-08 起）见 [Issue #13](https://github.com/liuzhenfang001/EvaAI/issues/13)：~~docker 沙箱~~（T15）、~~skill 加载机制~~（T14）、~~MCP~~（T13）、Rag（+ llm wiki）。
-
-已完成的水平里程碑：M0 脚手架 + 边界测试 + 配置加载 + 反射加载；M1 模型工厂 + ReAct 执行器（LangChain `create_agent` + 6 个硬核中间件）。

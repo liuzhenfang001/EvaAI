@@ -139,6 +139,39 @@ class KnowledgeConfig(BaseModel):
     ignore: list[str] = []
 
 
+class MemoryConfig(BaseModel):
+    """长期记忆配置。
+
+    ``enabled`` **默认关**：它会给 lead 链多挂两个中间件、给模型多一件检索工具、每个会话
+    多一段注入、并起一个后台抽取队列。默认关是「没打开这个功能的部署，行为与从前逐字节
+    相同」的前提（与 ``KnowledgeConfig.enabled`` 同一条理由）。
+
+    ``max_injection_tokens`` 是**整段注入的预算**（画像 + 事实），``guaranteed_categories`` 里
+    的分类先占 ``guaranteed_token_budget`` 那条保底通道——记错的事会再犯，所以 ``correction``
+    默认享有一条不该被挤掉的通道。
+
+    **抽取是后台的**：``debounce_seconds`` 是「最后一轮对话之后安静多久才抽」，``model`` 是
+    抽取用的模型 profile（``None`` = 主模型），``max_facts_in_prompt`` 是每次抽取时把多少条
+    现有事实带给模型（它要据此决定替换/删除）。``min_capture_chars`` 以下的消息视为寒暄。
+
+    ``db_path`` 的相对路径按**项目根**解析（与 ``checkpoint`` / ``journal`` 同一口径）。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    db_path: str = "./data/memory.sqlite"
+    max_injection_tokens: int = 2000
+    guaranteed_categories: list[str] = ["correction"]
+    guaranteed_token_budget: int = 500
+    debounce_seconds: float = 30.0
+    model: str | None = None
+    extraction_timeout_seconds: float = 60.0
+    max_facts_in_prompt: int = 100
+    max_capture_turns: int = 20
+    min_capture_chars: int = 3
+
+
 class ToolConfig(BaseModel):
     """一个工具的注册项。
 
@@ -174,6 +207,7 @@ class AppConfig(BaseModel):
     journal: JournalConfig = JournalConfig()
     agent: AgentConfig = AgentConfig()
     knowledge: KnowledgeConfig = KnowledgeConfig()
+    memory: MemoryConfig = MemoryConfig()
     tools: list[ToolConfig] = []
     """工具注册表。**缺省是空表，而且空表会被拒绝启动**（见 app 层的 ``build_tools``）。
 

@@ -70,9 +70,17 @@ def translate(stream_kind: str, data: Any, *, lane: str) -> RunEvent | None:
     return None
 
 
-def _message_event(data: Any, *, lane: str) -> MessagesEvent:
-    """``messages`` 载荷 ``(chunk, metadata)`` → :class:`MessagesEvent`。"""
+def _message_event(data: Any, *, lane: str) -> MessagesEvent | None:
+    """``messages`` 载荷 ``(chunk, metadata)`` → :class:`MessagesEvent`。
+
+    ``hide_from_ui`` 的消息**一律丢弃**（返回 ``None``）。当前它们不会出现在 ``messages``
+    流里——``create_agent`` 的中间件节点是 ``trace=False``，节点输出不进消息流。但那是内部
+    实现细节；前端历史完全建立在 journal 的 message 桶上，一旦上游改变行为，一条内部注入
+    消息就会变成用户可见的对话气泡。这里按「标记语义」再挡一次，代价只有一次字典查询。
+    """
     chunk, metadata = data
+    if (getattr(chunk, "additional_kwargs", None) or {}).get("hide_from_ui"):
+        return None
     return MessagesEvent(
         task_id=lane,
         chunk=chunk.model_dump(mode="json"),

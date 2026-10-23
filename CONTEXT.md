@@ -222,14 +222,52 @@ _Avoid_: 增量索引、增量同步、差分更新
 构建**失败**时检索**可见地报错**（`KnowledgeUnavailable`），而不是静默返回空结果。
 _Avoid_: 预热、加载中标记、健康检查
 
+### 长期记忆
+
+**长期记忆（long-term memory）**：
+**跨会话**留在本地的两样东西：**画像**（六块叙述性摘要）与**事实**（一条条原子断语），存在
+`data/memory.sqlite` 里。**它不是会话记忆**——那是 checkpointer 里那条 `{会话}:lead` 坐标，
+随会话生灭；也不是知识库——那是仓库文本的向量索引，是「查资料」。它与 `SummarizationMiddleware`
+更不重叠：那个压的是**本 thread** 的上下文，画像里的 `history` 三块是跨会话的长期历史记录。
+_Avoid_: memory（太宽，指不清哪一层）、聊天记录、用户档案（那是它的一部分）、RAG 记忆
+
+**画像（profile）/ 事实（fact）**：
+画像分两组共六块：`user`（`work_context` / `personal_context` / `top_of_mind`）与 `history`
+（`recent_months` / `earlier_context` / `long_term_background`），每块一段自由文本；事实是原子
+条目，带九选一的 `category`（其中 `correction` 享注入的保底通道）、`confidence` 与来源会话。
+**事实按内容去重**（唯一索引），**画像按块覆盖**。两者都由 T21 的抽取器生产。
+_Avoid_: 记忆条目、知识点、条目化记忆
+
+**记忆注入（memory injection）**：
+一个会话**开头**把当前记忆渲染成一段 `<memory>…</memory>`，作为一条 `role=user` 的**隐藏消息**
+（`hide_from_ui`）**写进 thread state**，此后不再重复。模型每轮都能从历史里看到它，而它不进
+journal、不出现在前端对话里（事件翻译层按 `hide_from_ui` 兜底过滤）。**它不是每轮回放**——
+T20 曾在 `wrap_model_call` 里按请求 override，每个 ReAct 步骤都会重复一遍，T21 改掉了。
+_Avoid_: 记忆提示词、上下文拼接、注入消息（那是一次性的载体，不是一个概念）、每轮注入
+
+**记忆抽取（memory extraction）**：
+一轮对话结束后，采集中间件把「真实用户消息 + 最终助手回复」丢进按会话去抖的后台队列
+（默认 30 秒），由抽取模型整理成画像更新与事实增删改，成功后推进**水位线**。水位线是最后一条
+已抽取 AI 消息的 id——它是**身份**不是游标，用来在 state 里定位「从哪之后还没抽」。抽取失败
+不推进水位线，下次连同失败那轮一起重抽；关机时未决项直接丢弃（下次会补上）。
+_Avoid_: 记忆整理、后台任务、信号检测（我们不做 DeerFlow 那套规则打分）
+
+**记忆工具（memory tools）**：
+代码里有三件：`memory_save` / `memory_search` / `memory_forget`；**模型只拿 `memory_search`**
+（T21 起写入是被动的，save / forget 只留给管理页与将来的 tool 模式）。`memory_search` 支持
+`since`（ISO 8601，按 `updated_at` 过滤）。它们都**只属于主 Agent**（与 `present_files` 同规则：
+子 agent 上下文隔离），且都是 `async def`——同步工具会被 langgraph 丢进工作线程，而存储的
+SQLite 连接有线程亲和性。
+_Avoid_: 记忆 API、记忆接口
+
 ### 交付
 
 **垂直切片（tracer bullet）**：
 一条端到端打穿各层、自身即可演示或验证的交付单元。
 _Avoid_: milestone, 里程碑, 阶段, horizontal slice
 
-**T1–T19**：
-当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15、T15 是 #16、T16 是 #17、T17 是 #18、T18 是 #19、T19 是 #20），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)，T15（docker 沙箱）见 [Issue #16](https://github.com/liuzhenfang001/EvaAI/issues/16)，T16（Plan-Exec 下线）见 [Issue #17](https://github.com/liuzhenfang001/EvaAI/issues/17)，T17（沙箱上移 harness）见 [Issue #18](https://github.com/liuzhenfang001/EvaAI/issues/18)，T18（RAG 知识库）见 [Issue #19](https://github.com/liuzhenfang001/EvaAI/issues/19)。T19（运行期收进 `runtime`）见 [Issue #20](https://github.com/liuzhenfang001/EvaAI/issues/20)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
+**T1–T20**：
+当前垂直切片的编号。**T 号与 GitHub Issue 号不一一对应**（T3 是 #4、T4 是 #3、T7 是 #7、T13 是 #14、T14 是 #15、T15 是 #16、T16 是 #17、T17 是 #18、T18 是 #19、T19 是 #20、T20 是 #21），引用时写全「T3（#4）」以免混淆。T7 起都是原 MVP（T1–T6）之外新增的：T7 见 [Issue #7](https://github.com/liuzhenfang001/EvaAI/issues/7)，T8（换成 ReAct 主 Agent）见 [Issue #8](https://github.com/liuzhenfang001/EvaAI/issues/8)，T9（图改为每请求构建）见 [Issue #9](https://github.com/liuzhenfang001/EvaAI/issues/9)，T10（回复渲染 Markdown）见 [Issue #10](https://github.com/liuzhenfang001/EvaAI/issues/10)，T11（产出物以文件卡片展示）见 [Issue #11](https://github.com/liuzhenfang001/EvaAI/issues/11)，T12（思考模式与动态深度）见 [Issue #12](https://github.com/liuzhenfang001/EvaAI/issues/12)，T13（MCP 集成）见 [Issue #14](https://github.com/liuzhenfang001/EvaAI/issues/14)，T14（skill 加载机制）见 [Issue #15](https://github.com/liuzhenfang001/EvaAI/issues/15)，T15（docker 沙箱）见 [Issue #16](https://github.com/liuzhenfang001/EvaAI/issues/16)，T16（Plan-Exec 下线）见 [Issue #17](https://github.com/liuzhenfang001/EvaAI/issues/17)，T17（沙箱上移 harness）见 [Issue #18](https://github.com/liuzhenfang001/EvaAI/issues/18)，T18（RAG 知识库）见 [Issue #19](https://github.com/liuzhenfang001/EvaAI/issues/19)。T19（运行期收进 `runtime`）见 [Issue #20](https://github.com/liuzhenfang001/EvaAI/issues/20)。T20（长期记忆：存储 + 注入 + 主动工具 + 管理页）见 [Issue #21](https://github.com/liuzhenfang001/EvaAI/issues/21)，T21（长期记忆二期：被动抽取 + 会话开头注入）见 [Issue #22](https://github.com/liuzhenfang001/EvaAI/issues/22)。二期到 T12 收尾，T13 起是[三期](https://github.com/liuzhenfang001/EvaAI/issues/13)。
 _Avoid_: M2/M3/M4（旧的水平里程碑分法，已废弃）
 
 ### 可观测

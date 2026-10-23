@@ -19,9 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.gateway.agents import AgentFactory
 from app.gateway.mcp import load_mcp_tools
-from app.gateway.routers import chat, files, threads
+from app.gateway.routers import chat, files, memory, threads
 from app.gateway.skills import project_skills
 from app.tools.knowledge import start_knowledge
+from app.tools.memory import make_extractor, start_memory
 from app.tools.registry import build_tools
 from app.tools.sandbox_layout import build_layout
 from evaharness.checkpoint.sqlite_saver import make_sqlite_checkpointer, prune_checkpoints
@@ -142,11 +143,33 @@ async def lifespan(app: FastAPI):
         )
         app.state.knowledge = knowledge
         knowledge_tools = [knowledge.tool] if knowledge is not None else []
-        all_tools = [*business_tools, *mcp_tools, *knowledge_tools]
         if knowledge is not None:
             stack.push_async_callback(knowledge.aclose)
 
-        app.state.agent_factory = AgentFactory(app_config, all_tools, checkpointer=saver, skills=skills)
+        # 长期记忆（T21）：开三张空表，建**只含 memory_search** 的工具表、封注入渲染器与采集中间件，
+        # 并起一个去抖抽取队列（每轮结束后后台调 LLM 整理画像与事实）。抽取器只在启用时构造：
+        # 它要解析模型 profile，没开记忆的部署不该因为一个写错的 profile 名而起不来。
+        memory_config = app_config.memory
+        memory_extractor = make_extractor(app_config, memory_config) if memory_config.enabled else None
+        memory = await start_memory(
+            memory_config,
+            db_path=_resolve_path(memory_config.db_path),
+            extractor=memory_extractor,
+        )
+        app.state.memory = memory
+        memory_tools = list(memory.tools) if memory is not None else []
+        if memory is not None:
+            stack.push_async_callback(memory.aclose)
+
+        all_tools = [*business_tools, *mcp_tools, *knowledge_tools, *memory_tools]
+        app.state.agent_factory = AgentFactory(
+            app_config,
+            all_tools,
+            checkpointer=saver,
+            skills=skills,
+            memory=memory.render if memory is not None else None,
+            memory_capture=memory.capture if memory is not None else None,
+        )
 
         # 运行中 run 的登记表：取消端点靠它触达正在跑的 run（T5）。与 checkpointer 一样
         # 是长命共享物，但**没有活跃事件循环的约束**——只是一个 dict。
@@ -162,7 +185,14 @@ async def lifespan(app: FastAPI):
         # 它抓的是「装配连线断了」，不是「语义接错了」。
         #
         # checkpointer=None 是有意的：这一步只验装配，不该和 saver 的生命周期绑在一起。
-        smoke = AgentFactory(app_config, all_tools, checkpointer=None, skills=skills)
+        smoke = AgentFactory(
+            app_config,
+            all_tools,
+            checkpointer=None,
+            skills=skills,
+            memory=memory.render if memory is not None else None,
+            memory_capture=memory.capture if memory is not None else None,
+        )
         smoke.lead()
 
         yield
@@ -213,6 +243,8 @@ def create_app() -> FastAPI:
     app.include_router(threads.router)
     # 文件卡片点「下载」走的就是它（GET /threads/{会话}/files/{路径}）。
     app.include_router(files.router)
+    # 记忆管理页（T20）走它：看 / 增 / 改 / 删事实与画像。
+    app.include_router(memory.router)
     return app
 
 

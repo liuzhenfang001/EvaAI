@@ -23,6 +23,7 @@ MECHANISM_PACKAGES = (
     "models",
     "sandbox",
     "knowledge",
+    "memory",
     "checkpoint",
     "fingerprint",
     "mcp",

@@ -31,7 +31,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 
-from app.prompts import BASH_SECTION, KNOWLEDGE_SECTION, SUBAGENT_PROMPT, SYSTEM_PROMPT
+from app.prompts import BASH_SECTION, KNOWLEDGE_SECTION, MEMORY_SECTION, SUBAGENT_PROMPT, SYSTEM_PROMPT
 from app.tools.present_files import PRESENT_FILES_NAME
 from evaharness.agents.lead_agent import (
     build_lead_middlewares,
@@ -41,6 +41,7 @@ from evaharness.agents.lead_agent import (
 )
 from evaharness.config.app_config import AppConfig
 from evaharness.knowledge import KNOWLEDGE_SEARCH_NAME
+from evaharness.memory import LEAD_MEMORY_TOOL_NAMES, MEMORY_TOOL_NAMES
 from evaharness.models.factory import create_chat_model
 from evaharness.runtime import RunOptions
 from evaharness.sandbox import BASH_TOOL_NAME
@@ -58,16 +59,27 @@ ModelFactory = Callable[[str | None, "RunOptions | None"], BaseChatModel]
 
 
 def _subagent_tools(tools: Sequence[Any]) -> list[Any]:
-    """子 agent 的工具集：**剔除** ``present_files``。
+    """子 agent 的工具集：**剔除**两个只属于 lead 的名字。
 
-    子 agent 用 ``ainvoke`` 跑，没有 custom 流模式，于是它那张图的 ``runtime.stream_writer``
-    是个 no-op——工具在里面 emit 的东西**石沉大海**：不抛异常、不报错，只是卡片永远不出现。
-    这种「静默失效」比报错难查一个量级，所以在这里**结构性地**剔掉，而不是在工具里加一句
-    运行期判断（那种判断本身也可能写错，而且会把「为什么不行」散到两个地方）。
+    ``present_files``——子 agent 用 ``ainvoke`` 跑，没有 custom 流模式，于是它那张图的
+    ``runtime.stream_writer`` 是个 no-op：工具在里面 emit 的东西**石沉大海**，不抛异常、
+    不报错，只是卡片永远不出现。这种「静默失效」比报错难查一个量级，所以在这里**结构性地**
+    剔掉，而不是在工具里加一句运行期判断（那种判断本身也可能写错，而且会把「为什么不行」散到
+    两个地方）。语义上也对：交付物由主 Agent 统一交给用户。
 
-    语义上也对：交付物由主 Agent 统一交给用户。子 agent 只把「文件写到哪了」回报给它。
+    ``memory_*``——记忆是**跨会话的用户画像**，而子 agent 的存在理由就是上下文隔离：它看不到
+    父对话，也就没有判断「什么值得长期记住」的上下文；而且它自己的记忆注入也被摘了（只有 lead
+    链挂记忆中间件），让它查而不让它读只会得到一份和它无关的画像。参照项目同样只把记忆工具
+    挂在 lead 上。
+
+    两者归成一句：**「交给用户看的」与「记住用户的」都只属于主 Agent。** 白名单会把没列进去的
+    工具全部静默丢掉，所以这里继续用黑名单。
     """
-    return [tool for tool in tools if getattr(tool, "name", None) != PRESENT_FILES_NAME]
+    return [
+        tool
+        for tool in tools
+        if getattr(tool, "name", None) != PRESENT_FILES_NAME and getattr(tool, "name", None) not in MEMORY_TOOL_NAMES
+    ]
 
 
 class AgentFactory:
@@ -89,6 +101,8 @@ class AgentFactory:
         *,
         model_factory: ModelFactory | None = None,
         skills: Sequence[Skill] = (),
+        memory: Callable[[], str] | None = None,
+        memory_capture: Callable[[str, Sequence[Any]], None] | None = None,
     ) -> None:
         """保存建图参数，不做任何构建。
 
@@ -103,10 +117,22 @@ class AgentFactory:
                 **别在这里改** ``timeout`` / ``http_client`` 这类参与 httpx 客户端缓存键
                 的参数：``httpx.Timeout`` 不可哈希时会绕过缓存、每次新建客户端，连接池
                 会按请求泛滥（ADR-0011 硬约束）。同理，模型类必须能无连接构造。
+            memory: 长期记忆的**注入渲染器**——一个无参可调用，由
+                :class:`~evaharness.agents.middlewares.memory.MemoryMiddleware` 在会话开头调
+                一次。``None`` 表示这个部署没开长期记忆（不加中间件、提示词里也不出现那一段）。
+
+                **它不吃本轮的用户消息**：渲染器是「把所有记忆渲染成一段话」，按查询检索是
+                ``memory_search`` 工具的事（与参照项目同一个分工）。所以这里不需要把
+                ``chat.py`` 的 ``body.content`` 传下来。
+            memory_capture: 长期记忆的**采集接缝**——``(session_id, messages) -> None``，由
+                :class:`~evaharness.agents.middlewares.memory.MemoryCaptureMiddleware` 在轮末
+                调一次。它只负责把对话丢进队列，抽取发生在后台。与 ``memory`` 同开同关。
         """
         self.app_config = app_config
         self.tools = list(tools)
         self.checkpointer = checkpointer
+        self._memory = memory
+        self._memory_capture = memory_capture
         # 技能清单**渲染一次**存下来：它的内容与这次构建绑定，而 `_prompt` 会被调用三次
         # （主图 / 子图 / 执行单元）。空技能时它是 `""`，于是 `_prompt` 原样返回 base。
         self._skill_section = render_skills_section(list(skills))
@@ -116,22 +142,32 @@ class AgentFactory:
         # 知识库段同理：只有检索工具真的在表里时才拼。它顺带是「/knowledge 这个第五个只读目录
         # 到底存不存在」的告知——不拼的话模型不会知道该去那儿读全文。
         self._knowledge_section = KNOWLEDGE_SECTION if any(tool.name == KNOWLEDGE_SEARCH_NAME for tool in tools) else ""
+        # 长期记忆段也按工具门控——它只讲「怎么用 memory_search」与「<memory> 段是背景数据」。
+        # 记忆的正文由 MemoryMiddleware 写进 thread state，不在这里拼（见 `_prompt` 的 docstring）。
+        self._memory_section = MEMORY_SECTION if LEAD_MEMORY_TOOL_NAMES & {tool.name for tool in tools} else ""
         self._model_factory: ModelFactory = model_factory if model_factory is not None else self._create_model
 
-    def _prompt(self, base: str) -> str:
-        """把技能清单与 bash 段接到基础提示词后面——**两段都为空时逐字节原样返回**。
+    def _prompt(self, base: str, *, lead: bool) -> str:
+        """把技能清单与 bash / 知识库段接到基础提示词后面——**全为空时逐字节原样返回**。
 
         「空时必须一字不差」不是洁癖：它拼在 `system_prompt` 后面，多一点换行就等于所有没写技能的
         部署都拿到一份与从前不同的提示词，前缀缓存白废、`test_lead_agent` 那两条断言也会红。
 
-        **为什么拼字符串而不是用中间件往 messages 里插一条**：`tests/test_react.py` 硬编码了默认
-        中间件链的名字，`tests/test_lead_agent_memory.py` 断言模型收到 10 条消息——插消息会把后者
-        顶破，加中间件会把前者顶破。拼进 `system_prompt` 两条都不动（system 那条只是变长）。
+        **为什么拼字符串而不是用中间件往 messages 里插一条**：`test_lead_agent.py` 断言 lead 链
+        ``== build_default_middlewares() + [StepBudgetMiddleware]``，`test_lead_agent_memory.py`
+        断言模型收到 10 条消息——插消息会把后者顶破，加默认中间件会把前者顶破。拼进
+        `system_prompt` 两条都不动（system 那条只是变长）。
+
+        这几段都是**静态**的：内容只随部署变，不随对话变。长期记忆的正文是唯一的例外——它随对话
+        积累而变，所以这里只讲「怎么用 `memory_search`」，正文走 `MemoryMiddleware` 写进 state。
+
+        ``lead`` 决定要不要带上记忆段：记忆工具只进主图（见 :func:`_subagent_tools`），而
+        「提示词里提到一个模型调不到的工具」正是别的几段一直在避免的事。
         """
-        sections = [
-            section for section in (self._skill_section, self._bash_section, self._knowledge_section) if section
-        ]
-        return "\n\n".join([base, *sections])
+        sections = [self._skill_section, self._bash_section, self._knowledge_section]
+        if lead:
+            sections.append(self._memory_section)
+        return "\n\n".join([base, *(section for section in sections if section)])
 
     def lead(self, options: RunOptions | None = None) -> CompiledStateGraph:
         """建主 Agent 的图，连带它专属的子 agent 图与 ``task`` 工具。
@@ -152,13 +188,13 @@ class AgentFactory:
         subagent = make_subagent_graph(
             model,
             _subagent_tools(self.tools),
-            system_prompt=self._prompt(SUBAGENT_PROMPT),
+            system_prompt=self._prompt(SUBAGENT_PROMPT, lead=False),
             checkpointer=self.checkpointer,
         )
         return make_lead_agent(
             model,
             [*self.tools, make_task_tool(subagent)],
-            system_prompt=self._prompt(SYSTEM_PROMPT),
+            system_prompt=self._prompt(SYSTEM_PROMPT, lead=True),
             middleware=self._lead_middlewares(model),
             checkpointer=self.checkpointer,
         )
@@ -183,6 +219,8 @@ class AgentFactory:
             summarization=summarization,
             summary_model=summary_model,
             max_steps=self.app_config.agent.max_steps,
+            memory=self._memory,
+            memory_capture=self._memory_capture,
         )
 
     def _create_model(self, name: str | None, options: RunOptions | None = None) -> BaseChatModel:

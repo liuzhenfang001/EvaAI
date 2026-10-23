@@ -68,6 +68,31 @@ agent:
 #   fingerprint_mode: mtime           # mtime（快）| content（准）
 #   ignore: []                        # fnmatch 通配符（匹配相对路径），如 ["drafts/*"]
 
+# 长期记忆（T21）：跨会话记住关于用户的事——六块画像摘要 + 一条条原子事实，存在本地 SQLite。
+# 写入是**被动**的：每轮结束后把「用户消息 + 最终回复」丢进去抖队列，安静 debounce_seconds 秒后
+# 由抽取模型整理成画像与事实；模型手里只有 memory_search 用于按需检索。记忆在一个会话开头作为
+# **隐藏消息**注入一次（不显示在对话记录里）。见 docs/adr/0025 / 0026。
+#
+# 默认关：打开它会给 lead 链多挂两个中间件、给模型多一件检索工具、每个会话多一段注入，并起一个
+# 后台抽取队列。没有外部依赖，不需要任何 key。
+#
+# max_injection_tokens 是整段注入的预算（画像 + 事实），超了按优先级裁：guaranteed_categories
+# 里的分类先占 guaranteed_token_budget 那条保底通道（记错的事会再犯，所以 correction 默认保底），
+# 剩下给画像，再剩下给其余事实。
+#
+# memory:
+#   enabled: false
+#   db_path: ./data/memory.sqlite     # 相对路径按项目根解析
+#   max_injection_tokens: 2000
+#   guaranteed_categories: [correction]
+#   guaranteed_token_budget: 500
+#   debounce_seconds: 30              # 最后一轮对话之后安静多久才抽取
+#   model: null                       # 抽取用的模型 profile；null = 主模型
+#   extraction_timeout_seconds: 60
+#   max_facts_in_prompt: 100
+#   max_capture_turns: 20
+#   min_capture_chars: 3
+
 # 工具集（T4）。每一项是一个工具；`use` 是 "module.path:attr"，指向**两种东西之一**：
 #   - 一个 BaseTool 实例（@tool 装饰过的函数就是）；
 #   - 一个**工厂函数**，它吃下面那些额外键作为关键字参数，返回一个工具。
