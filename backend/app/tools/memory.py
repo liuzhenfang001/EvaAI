@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 _EXTRACTION_RETRY = (
     "上一次输出不是合法 JSON。请只输出符合 schema 的 JSON 对象，"
     "不要 Markdown 围栏、不要任何解释文字。"
+    "注意 profile[].section 只能取 schema 里枚举的六个英文块名，不能写 user / history 分组名。"
 )
 
 
@@ -120,10 +121,11 @@ def make_extractor(app_config: AppConfig, config: MemoryConfig) -> Extractor:
     默认路径会直接 400。``json_object`` 只保证「是 JSON」不保证结构，所以还要
     :func:`tolerant_parse_update` 兜底。
 
-    抽取是内部辅助调用，固定 ``thinking="off"``：让后台整理跟着用户的思考档位跑没有意义，
-    只会让每次抽取都变贵。
+    抽取是内部辅助调用，**固定 ``thinking="high"``**：它不跟用户的思考档位跑（后台整理不该
+    继承前台的档位），但抽取本身是「读一整段对话 → 判断该记什么、该替换哪条」的推理活，
+    极速档下漏记与错配明显（实测）。这是拿一点后台成本换抽取准确率，与前台延迟无关。
     """
-    model = create_chat_model(app_config, config.model or None, options=RunOptions(thinking="off"))
+    model = create_chat_model(app_config, config.model or None, options=RunOptions(thinking="high"))
     structured = model.with_structured_output(MemoryUpdate, method="json_mode", include_raw=True)
 
     async def extract(messages: Sequence[BaseMessage]) -> MemoryUpdate:

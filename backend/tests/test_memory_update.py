@@ -73,7 +73,7 @@ def test_bad_items_are_skipped_without_losing_the_batch(store):
             ],
             facts_update=[FactUpdate(id="fact_missing", content="改不到")],
             facts_remove=["fact_missing"],
-            profile=[ProfilePatch(section="mood", summary="不存在的块")],
+            profile=[ProfilePatch(section="work_context", summary="   ")],
         ),
         thread_id="th-1",
     )
@@ -98,6 +98,11 @@ def test_the_prompt_carries_existing_facts_with_ids_and_the_new_conversation(sto
     assert "用户偏好中文回答" in text
     assert "以后都用中文" in text
     assert "JSON" in text
+    # 六个块名要真的出现在 prompt 里（包括 schema 中的枚举），并明确排除分组名。
+    for section in ("work_context", "personal_context", "top_of_mind", "recent_months",
+                    "earlier_context", "long_term_background"):
+        assert section in text
+    assert "不要写 user / history" in text
 
 
 def test_tolerant_parse_handles_fences_and_prose():
@@ -109,6 +114,21 @@ def test_tolerant_parse_handles_fences_and_prose():
 
     with pytest.raises(ValueError):
         tolerant_parse_update("完全不是 JSON")
+
+
+def test_a_group_name_is_not_a_profile_section():
+    """回归（2026-10-23）：极速档会把 ``user`` / ``history`` 分组名当块名写进来。
+
+    之前 ``section`` 是裸 string，这种输出能解析成功、落库时被当「未知的块」跳过——症状是
+    **事实一直在涨、画像永远是空的**。现在是枚举：解析期就失败（上层据此重试），不会静默丢块。
+    """
+    with pytest.raises(ValueError):
+        tolerant_parse_update('{"profile": [{"section": "user", "summary": "小明是程序员"}]}')
+
+    parsed = tolerant_parse_update(
+        '{"profile": [{"section": "personal_context", "summary": "小明是程序员"}]}'
+    )
+    assert parsed.profile[0].section == "personal_context"
 
 
 # --------------------------------------------------------------------------- #

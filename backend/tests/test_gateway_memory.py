@@ -13,9 +13,11 @@ import pytest
 from fastapi import FastAPI
 
 from app.gateway.routers import memory as memory_router
-from app.tools.memory import MemoryRuntime, make_render, start_memory
-from evaharness.config.app_config import MemoryConfig
+from app.tools import memory as memory_tools
+from app.tools.memory import MemoryRuntime, make_extractor, make_render, start_memory
+from evaharness.config.app_config import AppConfig, MemoryConfig, ModelConfig
 from evaharness.memory import SqliteMemoryStore
+from evaharness.runtime import RunOptions
 
 
 def _client(runtime: MemoryRuntime | None) -> httpx.AsyncClient:
@@ -58,6 +60,29 @@ async def test_enabled_builds_store_and_exposes_only_search(tmp_path):
         assert (tmp_path / "m.sqlite").is_file()
     finally:
         await runtime.aclose()
+
+
+def test_the_extractor_always_asks_for_thinking(monkeypatch):
+    """抽取是后台推理活：固定开思考，**不跟用户的档位跑**（防有人顺手把它改成 off 省成本）。"""
+    seen: dict[str, object] = {}
+
+    class _Model:
+        def with_structured_output(self, *args, **kwargs):
+            return object()
+
+    def fake_create(app_config, name=None, *, options=None, **kwargs):
+        seen["name"] = name
+        seen["options"] = options
+        return _Model()
+
+    monkeypatch.setattr(memory_tools, "create_chat_model", fake_create)
+    app_config = AppConfig(
+        config_version=1, models=[ModelConfig(name="m", model="m", api_key="sk-test")]
+    )
+
+    make_extractor(app_config, MemoryConfig(enabled=True, model="m"))
+
+    assert seen == {"name": "m", "options": RunOptions(thinking="high")}
 
 
 def test_the_renderer_reads_the_store_fresh_every_time(store):

@@ -28,22 +28,24 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from evaharness.memory.capture import CapturedTurn
-from evaharness.memory.schema import PROFILE_GROUPS
+from evaharness.memory.schema import ProfileSection
 from evaharness.memory.store import DuplicateFact, MemoryStore, UnknownFact
 
 logger = logging.getLogger(__name__)
 
-_PROFILE_SECTIONS: tuple[str, ...] = tuple(
-    section.value for group in PROFILE_GROUPS.values() for section in group
-)
-
 
 class ProfilePatch(BaseModel):
-    """画像的一块更新。``section`` 取六块之一。"""
+    """画像的一块更新。``section`` 取六块之一。
+
+    **用枚举而不是裸 ``str``**：实测（2026-10-23）极速档下模型会把**分组名**（``user`` /
+    ``history``）当成块名写进来，落库时被当作「未知的块」跳过，画像于是永远不更新。
+    枚举让 JSON schema 里直接带上合法取值，也让这种输出在**解析期**就失败、触发重试，
+    而不是静默丢掉一块画像。
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    section: str
+    section: ProfileSection
     summary: str
 
 
@@ -132,9 +134,12 @@ def build_extraction_messages(
         "- 用户纠正过的事用 category=correction，并通过 facts_update / facts_remove 处理旧记录，"
         "不要留下两条互相矛盾的记忆。\n"
         "- 与已有事实矛盾时优先替换或删除旧的，而不是再加一条。\n"
-        "- profile 是六块叙述性摘要：user 组 work_context / personal_context / top_of_mind；"
-        "history 组 recent_months / earlier_context / long_term_background。只输出有变化的块，"
-        "summary 用一段简洁的叙述，语言与用户一致。\n"
+        "- profile 是六块叙述性摘要，section 只能取下面六个英文值之一，"
+        "**不要写 user / history 这类分组名**：work_context（工作与专业领域）、"
+        "personal_context（个人生活与喜好）、top_of_mind（当前关注的事）、"
+        "recent_months（最近几个月的经历）、earlier_context（更早的上下文）、"
+        "long_term_background（长期背景）。只输出有新信息的块，summary 用一段简洁的叙述，"
+        "语言与用户一致。\n"
         "- facts_update / facts_remove 只能使用「已有事实」里出现过的 id；不要编造 id。\n"
         "- 没有任何值得记住的内容时，返回全空的 JSON。\n"
         f"- 今天是 {day}。\n\n"
@@ -212,12 +217,9 @@ def apply_update(store: MemoryStore, update: MemoryUpdate, *, thread_id: str) ->
             report.notes.append(f"add: {exc}")
 
     for patch in update.profile:
-        if patch.section not in _PROFILE_SECTIONS:
-            report.skipped += 1
-            report.notes.append(f"profile: 未知的块 {patch.section!r}")
-            continue
+        # ``section`` 是枚举，非法值在解析期就被挡下（见 :class:`ProfilePatch`），这里不再判。
         try:
-            store.set_profile(patch.section, patch.summary)
+            store.set_profile(patch.section.value, patch.summary)
             report.profile += 1
         except ValueError as exc:
             report.skipped += 1

@@ -60,8 +60,14 @@ AI 消息」当判据，这个会话就永远看不到后来积累的记忆。�
 `DeepSeekChatModel` 继承 `ChatOpenAI`，而 `with_structured_output` 默认签发
 `response_format={"type": "json_schema"}`；DeepSeek 的 Chat Completions 只认
 `{"type": "json_object"}`，默认路径会 400。因此显式 `method="json_mode"` + schema 写进 prompt
-+ `tolerant_parse_update`（去围栏、抠首尾大括号）+ 一次重试。抽取固定 `thinking="off"`：后台
-整理跟着用户的思考档位跑没有意义。
++ `tolerant_parse_update`（去围栏、抠首尾大括号）+ 一次重试。抽取**不跟用户的思考档位跑**，
+但固定开 `thinking="high"`：抽取是「读一整段对话 → 判断记什么、替换哪条」的推理活，极速档下
+漏记与错配明显（T21 实测后从 `off` 改过来）。多花的是后台成本，不影响前台延迟。
+
+`profile[].section` 用 `ProfileSection` **枚举**而不是裸 `str`（2026-10-23 补）：极速档下模型会
+把 `user` / `history` 这两个**分组名**当成块名写进来；裸 string 能解析通过，落库时才被当作
+「未知的块」跳过——症状是**事实一直在涨、画像永远是空的**。枚举让合法取值进入 JSON schema，
+并让这种输出在解析期失败、触发重试，而不是静默丢掉一块画像。
 
 **5. 冲突处理是「追加 + 替换 + 删除」。**
 
